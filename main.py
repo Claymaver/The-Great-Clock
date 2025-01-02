@@ -1,9 +1,10 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import sqlite3
 import random
 import time
+import asyncio
 
 # Set up bot
 intents = discord.Intents.default()
@@ -101,26 +102,59 @@ def update_user_xp(user_id, guild_id, xp_gain):
     c.execute('SELECT xp FROM user_xp WHERE user_id = ? AND guild_id = ?', (user_id, guild_id))
     return c.fetchone()[0]
 
-async def assign_roles(member, new_level, guild):
-    c.execute('SELECT level, role_id FROM level_roles WHERE guild_id = ?', (guild.id,))
-    roles = c.fetchall()
-    for level, role_id in roles:
+async def assign_roles(member, level, guild):
+    """
+    Assign the role for the user's current level and remove roles for all other levels.
+    """
+    guild_id = guild.id
+
+    # Fetch all level-role mappings for the guild
+    c.execute("SELECT level, role_id FROM level_roles WHERE guild_id = ? ORDER BY level ASC", (guild_id,))
+    level_roles = c.fetchall()
+
+    if not level_roles:
+        return  # No roles configured for this guild
+
+    current_role = None
+    roles_to_remove = []
+
+    # Determine the role to assign and collect all roles to remove
+    for lvl, role_id in level_roles:
         role = guild.get_role(role_id)
-        if role:
-            if new_level >= level:
-                await member.add_roles(role)
-            else:
-                await member.remove_roles(role)
+        if not role:
+            continue  # Skip if the role no longer exists in the guild
+
+        if level >= lvl:
+            current_role = role  # This is the highest role the user qualifies for
+        else:
+            roles_to_remove.append(role)  # Add all higher level roles to be removed if the level is not enough
+
+    # Remove roles that are no longer relevant for the current level
+    for role in member.roles:
+        if role in roles_to_remove:
+            await member.remove_roles(role)
+
+    # Assign the current level role if not already assigned
+    if current_role and current_role not in member.roles:
+        await member.add_roles(current_role)
+        print(f"Assigned role '{current_role.name}' to {member.display_name} for level {level}.")
+
 
 # Events
 @bot.event
 async def on_ready():
-    print(f'Bot connected as {bot.user}')
+    print(f"Bot connected as {bot.user}")
     try:
         synced = await bot.tree.sync()
         print(f"Slash commands synced: {len(synced)} commands.")
+
+        # Start the XP sync task
+        if not sync_xp_across_selected_guilds.is_running():
+            sync_xp_across_selected_guilds.start()
+
     except Exception as e:
-        print(f"Failed to sync commands: {e}")
+        print(f"Failed to sync commands or start tasks: {e}")
+
 
 @bot.event
 async def on_message(message):
@@ -530,7 +564,295 @@ async def clear_guild_data(interaction: discord.Interaction):
             ephemeral=True,
         )
 
+c.execute('''
+CREATE TABLE IF NOT EXISTS sync_guilds (
+    guild_id INTEGER PRIMARY KEY
+)
+''')
+conn.commit()
+
+@bot.tree.command(
+    name="add_sync_guild",
+    description="Add a guild to the XP sync list."
+)
+@app_commands.describe(guild_id="The ID of the guild to add to the sync list.")
+async def add_sync_guild(interaction: discord.Interaction, guild_id: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "You need to be an administrator to use this command.", ephemeral=True
+        )
+        return
+
+    try:
+        guild_id = int(guild_id)
+        c.execute("INSERT OR IGNORE INTO sync_guilds (guild_id) VALUES (?)", (guild_id,))
+        conn.commit()
+        await interaction.response.send_message(
+            f"Guild with ID {guild_id} has been added to the XP sync list.", ephemeral=False
+        )
+    except ValueError:
+        await interaction.response.send_message(
+            "Invalid guild ID. Please provide a valid numeric guild ID.", ephemeral=True
+        )
+
+@bot.tree.command(
+    name="remove_sync_guild",
+    description="Remove a guild from the XP sync list."
+)
+@app_commands.describe(guild_id="The ID of the guild to remove from the sync list.")
+async def remove_sync_guild(interaction: discord.Interaction, guild_id: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "You need to be an administrator to use this command.", ephemeral=True
+        )
+        return
+
+    try:
+        guild_id = int(guild_id)
+        c.execute("DELETE FROM sync_guilds WHERE guild_id = ?", (guild_id,))
+        conn.commit()
+        await interaction.response.send_message(
+            f"Guild with ID {guild_id} has been removed from the XP sync list.", ephemeral=False
+        )
+    except ValueError:
+        await interaction.response.send_message(
+            "Invalid guild ID. Please provide a valid numeric guild ID.", ephemeral=True
+        )
+
+@bot.tree.command(
+    name="view_sync_guilds",
+    description="View the list of guilds in the XP sync list."
+)
+async def view_sync_guilds(interaction: discord.Interaction):
+    c.execute("SELECT guild_id FROM sync_guilds")
+    guilds = c.fetchall()
+
+    if guilds:
+        guild_list = "\n".join([f"- {guild_id[0]}" for guild_id in guilds])
+        await interaction.response.send_message(
+            f"The following guilds are in the XP sync list:\n{guild_list}", ephemeral=False
+        )
+    else:
+        await interaction.response.send_message(
+            "No guilds are currently in the XP sync list.", ephemeral=False
+        )
+
+@tasks.loop(minutes=30)  # Adjust the interval as needed
+async def sync_xp_across_selected_guilds():
+    """
+    Sync user XP across selected guilds that are in the sync list.
+    """
+    try:
+        # Get the list of guilds to sync
+        c.execute("SELECT guild_id FROM sync_guilds")
+        sync_guilds = [row[0] for row in c.fetchall()]
+
+        if not sync_guilds:
+            print("No guilds to sync.")
+            return
+
+        # Consolidate XP and level for users across the selected guilds
+        c.execute(""" 
+            SELECT user_id, MAX(xp) as max_xp
+            FROM user_xp
+            WHERE guild_id IN ({} )
+            GROUP BY user_id
+        """.format(", ".join(["?"] * len(sync_guilds))), sync_guilds)
+        user_xp_data = c.fetchall()
+
+        if not user_xp_data:
+            print("No user XP data found to sync.")
+            return
+
+        for user_id, max_xp in user_xp_data:
+            # Calculate the level based on the max XP
+            base_xp = 100  # Replace with dynamic base XP if needed
+            max_level = int((max_xp / base_xp) ** 0.5)
+
+            print(f"Syncing user {user_id} with level {max_level} and XP {max_xp}.")
+
+            # Update XP and level in all selected guilds
+            for guild_id in sync_guilds:
+                # Insert or update the user's XP for the current guild
+                c.execute(
+                    "INSERT INTO user_xp (user_id, guild_id, xp) VALUES (?, ?, ?) ON CONFLICT (user_id, guild_id) DO UPDATE SET xp = ?",
+                    (user_id, guild_id, max_xp, max_xp),
+                )
+                
+                # Get the guild object
+                guild = bot.get_guild(guild_id)
+                if guild:
+                    try:
+                        # Attempt to fetch the member explicitly
+                        member = await guild.fetch_member(user_id)
+                        print(f"Assigning roles for {member.display_name} in guild {guild.name}.")
+                        await assign_roles(member, max_level, guild)
+                    except discord.NotFound:
+                        print(f"Member {user_id} not found in guild {guild.name}.")
+                    except discord.Forbidden:
+                        print(f"Bot doesn't have permission to view member {user_id} in guild {guild.name}.")
+                    except discord.HTTPException as e:
+                        print(f"An error occurred while fetching member {user_id} in guild {guild.name}: {e}")
+        
+        # Commit the changes to the database
+        conn.commit()
+        print("XP synchronization across selected guilds completed successfully.")
+
+    except Exception as e:
+        print(f"Error during XP synchronization: {e}")
+
+@bot.tree.command(
+    name="force_sync",
+    description="Manually synchronize XP and levels across all selected guilds."
+)
+async def force_sync(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "You need to be an administrator to use this command.", ephemeral=True
+        )
+        return
+
+    try:
+        await interaction.response.defer(ephemeral=False)  # Defer the response since it may take time
+
+        # Get the list of guilds to sync
+        c.execute("SELECT guild_id FROM sync_guilds")
+        sync_guilds = [row[0] for row in c.fetchall()]
+
+        if not sync_guilds:
+            await interaction.followup.send("No guilds are currently in the XP sync list.")
+            return
+
+        print(f"Syncing guilds: {sync_guilds}")
+
+        # Consolidate XP and level for users across the selected guilds
+        c.execute(""" 
+            SELECT user_id, MAX(xp) as max_xp
+            FROM user_xp
+            WHERE guild_id IN ({} )
+            GROUP BY user_id
+        """.format(", ".join(["?"] * len(sync_guilds))), sync_guilds)
+        user_xp_data = c.fetchall()
+
+        if not user_xp_data:
+            await interaction.followup.send("No user XP data found to sync.")
+            return
+
+        print(f"Fetched user XP data: {user_xp_data}")
+
+        for user_id, max_xp in user_xp_data:
+            # Calculate the level based on the max XP
+            base_xp = 100  # Replace with dynamic base XP if needed
+            max_level = int((max_xp / base_xp) ** 0.5)
+
+            print(f"Syncing user {user_id} with level {max_level} and XP {max_xp}.")
+
+            # Update XP and level in all selected guilds
+            for guild_id in sync_guilds:
+                # Insert or update the user's XP for the current guild
+                c.execute(
+                    "INSERT INTO user_xp (user_id, guild_id, xp) VALUES (?, ?, ?) ON CONFLICT (user_id, guild_id) DO UPDATE SET xp = ?",
+                    (user_id, guild_id, max_xp, max_xp),
+                )
+
+                # Get the guild object
+                guild = bot.get_guild(guild_id)
+                if guild:
+                    try:
+                        # Attempt to fetch the member explicitly
+                        member = await guild.fetch_member(user_id)
+                        print(f"Assigning roles for {member.display_name} in guild {guild.name}.")
+                        await assign_roles(member, max_level, guild)
+                    except discord.NotFound:
+                        print(f"Member {user_id} not found in guild {guild.name}.")
+                    except discord.Forbidden:
+                        print(f"Bot doesn't have permission to view member {user_id} in guild {guild.name}.")
+                    except discord.HTTPException as e:
+                        print(f"An error occurred while fetching member {user_id} in guild {guild.name}: {e}")
+        
+        # Commit the changes to the database
+        conn.commit()
+        await interaction.followup.send("XP synchronization across selected guilds has been completed successfully!")
+
+    except Exception as e:
+        print(f"Error during manual XP synchronization: {e}")
+        await interaction.followup.send(
+            "An error occurred during synchronization. Please try again later.",
+            ephemeral=True,
+        )
+
+    
+@bot.tree.command(
+    name="myprofile",
+    description="View your current level, XP, and progress to the next level."
+)
+async def myprofile(interaction: discord.Interaction):
+    """
+    Display the user's current level, XP, and progress toward the next level with a progress bar.
+    """
+    user_id = interaction.user.id
+    guild_id = interaction.guild.id
+
+    try:
+        # Fetch the user's current XP from the database
+        c.execute("SELECT xp FROM user_xp WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+        result = c.fetchone()
+
+        if not result:
+            await interaction.response.send_message(
+                "You haven't earned any XP yet. Start participating to gain XP and level up!", ephemeral=True
+            )
+            return
+
+        current_xp = result[0]
+
+        # Base XP (adjust dynamically if needed)
+        base_xp = 100
+
+        # Calculate current level
+        current_level = int((current_xp / base_xp) ** 0.5)
+
+        # XP needed for the next level
+        next_level = current_level + 1
+        xp_for_next_level = (next_level ** 2) * base_xp
+        xp_to_next_level = xp_for_next_level - current_xp
+
+        # Progress percentage
+        progress_percentage = (current_xp - (current_level ** 2) * base_xp) / ((next_level ** 2) * base_xp - (current_level ** 2) * base_xp)
+        progress_percentage = min(max(progress_percentage, 0), 1)  # Clamp between 0 and 1
+
+        # Generate a progress bar
+        progress_bar_length = 20  # Length of the bar
+        filled_length = int(progress_percentage * progress_bar_length)
+        progress_bar = "█" * filled_length + "░" * (progress_bar_length - filled_length)
+
+        # Estimate number of messages to level up (assuming average XP per message)
+        avg_xp_per_message = 3.0  # Adjust this based on your XP range (e.g., 1.0 to 5.0)
+        messages_to_next_level = int(xp_to_next_level / avg_xp_per_message)
+
+        # Create an embed for the user
+        embed = discord.Embed(
+            title=f"{interaction.user.display_name}'s Profile",
+            description=f"Level Progress: **{current_level} → {next_level}**",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Current Level", value=f"{current_level}", inline=True)
+        embed.add_field(name="Next Level", value=f"{next_level}", inline=True)
+        embed.add_field(name="Progress", value=f"`{progress_bar}`", inline=False)
+        embed.add_field(name="Current XP", value=f"{int(current_xp)}", inline=True)
+        embed.add_field(name="XP Needed", value=f"{int(xp_to_next_level)}", inline=True)
+        embed.add_field(name="Estimated Messages", value=f"{messages_to_next_level} messages", inline=False)
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        embed.set_footer(text="Keep participating to level up! You're doing great!")
+
+        await interaction.response.send_message(embed=embed)
+
+    except Exception as e:
+        print(f"Error in /myprofile command: {e}")
+        await interaction.response.send_message(
+            "An error occurred while retrieving your profile. Please try again later.", ephemeral=True
+        )
 
 
 # Run the bot
-bot.run("MTMyNDI4NTQ0MDI2NTgxNDAyNg.GkWjly.1hIrBaLgMYTBo_DSdDaEMtD_zms7-CUX9PPYaI")
+bot.run("abcdefghijklmnopqrstuvwxyz")
