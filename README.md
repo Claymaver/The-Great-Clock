@@ -47,7 +47,6 @@ Rivet is a customizable Discord bot designed to manage user leveling systems, as
 
 3. **Configure Your Bot Token**:
    - open the python main.py file and scroll to the bottom and input your bot token
-     ```
 
 4. **Initialize the Database**:
    Run the bot once to ensure the database schema is created:
