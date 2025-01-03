@@ -60,8 +60,9 @@ Rivet is a customizable Discord bot designed to manage user leveling systems, as
 
 ### **Leveling Commands**
 - `/view_leveling_settings` - View the current leveling configuration for your server.
-- ![Leveling System](assets/leveling-system.png)
+   ![Leveling System](assets/leveling-system.png)
 - `/set_leveling_formula` - Set the leveling formula (`Linear`, `Exponential`, or `Custom`).
+  ![formula](assets/leveling-formula.png)
 
 ### **Role Management Commands**
 - `/assign_command_role` - Assign roles to commands using an interactive UI.
