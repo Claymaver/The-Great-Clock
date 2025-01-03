@@ -66,6 +66,7 @@ Rivet is a customizable Discord bot designed to manage user leveling systems, as
 
 ### **Role Management Commands**
 - `/assign_command_role` - Assign roles to commands using an interactive UI.
+  ![formula](assets/assign-command-role.png)
 - `/remove_command_role` - Remove a role assigned to a command.
 - `/view_assigned_roles` - View roles currently assigned to commands.
 
