@@ -35,7 +35,7 @@ Rivet is a customizable Discord bot designed to manage user leveling systems, as
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/yourusername/Rivet.git
+   git clone https://github.com/Claymaver/Rivet.git
    cd Rivet
    ```
 
