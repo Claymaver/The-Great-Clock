@@ -8,7 +8,7 @@ Rivet is a customizable Discord bot designed to manage user leveling systems, as
 
 - **Dynamic Leveling System**:
   - Tracks user activity and awards XP based on message count.
-  - Configurable leveling formula (`Linear`, `Exponential`, or custom).
+  - Configurable leveling formula (`Linear`, `Exponential`, or custom). (custom doesn't work right now, please do not use it)
 
 - **Role Management**:
   - Automatically assigns roles based on user levels.
