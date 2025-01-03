@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
+from discord import app_commands, SelectOption
 import sqlite3
 import random
 import time
@@ -15,9 +15,29 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Connect to SQLite database
 conn = sqlite3.connect('leveling.db')
+
 c = conn.cursor()
 
+# Command ROles Table Creation
+c.execute('''
+CREATE TABLE IF NOT EXISTS user_xp (
+    user_id INTEGER,
+    guild_id INTEGER,
+    xp INTEGER,
+    PRIMARY KEY (user_id, guild_id)
+)
+''')
+
+conn.commit()
+
 # Create tables
+
+c.execute('''
+CREATE TABLE IF NOT EXISTS guild_settings (
+    guild_id INTEGER PRIMARY KEY,
+    embed_color INTEGER DEFAULT 3447003  -- Default Discord blue color
+)
+''')
 c.execute('''
 CREATE TABLE IF NOT EXISTS user_xp (
     user_id INTEGER,
@@ -50,22 +70,59 @@ CREATE TABLE IF NOT EXISTS level_roles (
     PRIMARY KEY (guild_id, level)
 )
 ''')
+c.execute('''
+CREATE TABLE IF NOT EXISTS command_roles (
+    guild_id INTEGER,
+    command_name TEXT,
+    role_id INTEGER,
+    PRIMARY KEY (guild_id, command_name)
+)
+''')
+
 conn.commit()
 
+def ensure_guild_settings_schema():
+    # Get the current schema of the guild_settings table
+    c.execute("PRAGMA table_info(guild_settings);")
+    columns = [row[1] for row in c.fetchall()]
+
+    # Add missing columns dynamically
+    if 'base_xp' not in columns:
+        c.execute("ALTER TABLE guild_settings ADD COLUMN base_xp INTEGER DEFAULT 300")
+    if 'cooldown' not in columns:
+        c.execute("ALTER TABLE guild_settings ADD COLUMN cooldown INTEGER DEFAULT 60")
+    if 'leveling_formula' not in columns:
+        c.execute("ALTER TABLE guild_settings ADD COLUMN leveling_formula TEXT DEFAULT 'linear'")
+
+    # Ensure the table exists (no-op if already present)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS guild_settings (
+            guild_id INTEGER PRIMARY KEY
+        )
+    """)
+    conn.commit()
+
+# Call this function during bot startup
+ensure_guild_settings_schema()
+
+
+
 # Functions for managing XP and levels
-def calculate_level(new_xp, guild_id):
-    c.execute('SELECT base_xp, formula FROM leveling_settings WHERE guild_id = ?', (guild_id,))
+def calculate_level(xp, guild_id):
+    c.execute("SELECT base_xp, formula FROM leveling_settings WHERE guild_id = ?", (guild_id,))
     result = c.fetchone()
-    base_xp = result[0] if result else 100
-    formula = result[1] if result else 'square_root'
+    base_xp, formula = result if result else (100, 'square_root')
 
     if formula == 'square_root':
-        return int((new_xp / base_xp) ** 0.5)
+        return int((xp / base_xp) ** 0.5)
     elif formula == 'linear':
-        return int(new_xp / base_xp)
+        return int(xp / base_xp)
     elif formula == 'custom':
-        return int((new_xp / base_xp) ** 0.8)
-    return int((new_xp / base_xp) ** 0.5)
+        return int((xp / base_xp) ** 0.8)
+    elif formula == 'exponential':
+        return int((xp / base_xp) ** 0.3)  # Exponential formula (adjust power as needed)
+    return 0  # Default if no formula matches
+
 
 def can_earn_xp(user_id, guild_id):
     current_time = int(time.time())
@@ -189,24 +246,94 @@ async def set_base_xp(interaction: discord.Interaction, base_xp: int):
     conn.commit()
     await interaction.response.send_message(f"Base XP for level 1 has been set to {base_xp}.")
 
-@bot.tree.command(name="set_leveling_formula", description="Set the formula for leveling.")
-@app_commands.describe(formula="The formula for leveling (square_root, linear, custom).")
-async def set_leveling_formula(interaction: discord.Interaction, formula: str):
+from discord import SelectOption, Embed, ButtonStyle
+from discord.ui import View, Select, Button
+
+class SetLevelingFormulaView(View):
+    def __init__(self):
+        super().__init__()
+        self.selected_formula = None
+
+        # Dropdown for leveling formulas
+        self.formula_select = Select(
+            placeholder="Select a leveling formula...",
+            options=[
+                SelectOption(label="Linear", value="linear", description="XP increases linearly per level."),
+                SelectOption(label="Exponential", value="exponential", description="XP increases exponentially."),
+                SelectOption(label="Custom", value="custom", description="Define a custom leveling formula."),
+            ]
+        )
+        self.formula_select.callback = self.select_formula
+        self.add_item(self.formula_select)
+
+        # Submit button
+        self.submit_button = Button(label="Submit", style=ButtonStyle.green)
+        self.submit_button.callback = self.submit
+        self.add_item(self.submit_button)
+
+        # Cancel button
+        self.cancel_button = Button(label="Cancel", style=ButtonStyle.red)
+        self.cancel_button.callback = self.cancel
+        self.add_item(self.cancel_button)
+
+    async def select_formula(self, interaction: discord.Interaction):
+        self.selected_formula = self.formula_select.values[0]
+        await interaction.response.defer()
+
+    async def submit(self, interaction: discord.Interaction):
+        if not self.selected_formula:
+            await interaction.response.send_message(
+                "Please select a leveling formula before submitting.", ephemeral=True
+            )
+            return
+
+        # Save the selected formula to the database
+        guild_id = interaction.guild.id
+        c.execute("""
+            INSERT INTO guild_settings (guild_id, leveling_formula)
+            VALUES (?, ?)
+            ON CONFLICT (guild_id) DO UPDATE SET leveling_formula = ?
+        """, (guild_id, self.selected_formula, self.selected_formula))
+        conn.commit()
+
+        # Confirmation embed
+        embed = Embed(
+            title="Leveling Formula Set",
+            description=f"The leveling formula has been set to `{self.selected_formula.capitalize()}`.",
+            color=0x00FF00,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def cancel(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "Leveling formula selection has been canceled.", ephemeral=True
+        )
+        self.stop()
+
+
+@bot.tree.command(
+    name="set_leveling_formula",
+    description="Set the leveling formula for this server."
+)
+async def set_leveling_formula(interaction: discord.Interaction):
+    """
+    Display a dropdown menu to set the leveling formula.
+    """
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("You need to be an administrator to use this command.", ephemeral=True)
+        await interaction.response.send_message(
+            "You need to be an administrator to use this command.", ephemeral=True
+        )
         return
-    valid_formulas = ['square_root', 'linear', 'custom']
-    if formula not in valid_formulas:
-        await interaction.response.send_message(f"Invalid formula. Choose from: {', '.join(valid_formulas)}.", ephemeral=True)
-        return
-    guild_id = interaction.guild.id
-    c.execute('''
-    INSERT INTO leveling_settings (guild_id, formula)
-    VALUES (?, ?)
-    ON CONFLICT (guild_id) DO UPDATE SET formula = ?
-    ''', (guild_id, formula, formula))
-    conn.commit()
-    await interaction.response.send_message(f"Leveling formula has been set to '{formula}'.")
+
+    # Send the view
+    view = SetLevelingFormulaView()
+    embed = Embed(
+        title="Set Leveling Formula",
+        description="Select a leveling formula from the dropdown menu below.",
+        color=0x3498DB,
+    )
+    await interaction.response.send_message(embed=embed, view=view)
+
 
 @bot.tree.command(name="set_xp_cooldown", description="Set the cooldown before users can earn XP again.")
 @app_commands.describe(cooldown="Cooldown in seconds (must be positive).")
@@ -226,34 +353,50 @@ async def set_xp_cooldown(interaction: discord.Interaction, cooldown: int):
     conn.commit()
     await interaction.response.send_message(f"The XP cooldown has been set to {cooldown} seconds.")
 
-@bot.tree.command(name="view_leveling_settings", description="View the leveling settings for this server.")
+@bot.tree.command(
+    name="view_leveling_settings",
+    description="View the current leveling settings for this server."
+)
 async def view_leveling_settings(interaction: discord.Interaction):
+    """
+    Display the leveling settings for the server in a visually appealing embed.
+    """
     guild_id = interaction.guild.id
-    c.execute('SELECT base_xp, formula, cooldown FROM leveling_settings WHERE guild_id = ?', (guild_id,))
-    result = c.fetchone()
-    if result:
-        base_xp, formula, cooldown = result
-        await interaction.response.send_message(f"Leveling settings:\nBase XP: {base_xp}\nFormula: {formula}\nCooldown: {cooldown} seconds.")
-    else:
-        await interaction.response.send_message("No custom leveling settings found. Default values are being used.")
 
-@bot.tree.command(name="assign_level_role", description="Assign a role for a specific level.")
-@app_commands.describe(level="The level to assign this role to.", role="The role to assign.")
-async def assign_level_role(interaction: discord.Interaction, level: int, role: discord.Role):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("You need to be an administrator to use this command.", ephemeral=True)
-        return
-    if level <= 0:
-        await interaction.response.send_message("Level must be a positive number.", ephemeral=True)
-        return
-    guild_id = interaction.guild.id
-    c.execute('''
-    INSERT INTO level_roles (guild_id, level, role_id)
-    VALUES (?, ?, ?)
-    ON CONFLICT (guild_id, level) DO UPDATE SET role_id = ?
-    ''', (guild_id, level, role.id, role.id))
-    conn.commit()
-    await interaction.response.send_message(f"Role '{role.name}' has been assigned to level {level}")
+    # Fetch settings from the database
+    c.execute("SELECT embed_color, leveling_formula, base_xp, cooldown FROM guild_settings WHERE guild_id = ?", (guild_id,))
+    result = c.fetchone()
+
+    # Default values if settings are not set
+    if not result:
+        embed_color = 0x3498DB  # Default blue
+        leveling_formula = "linear"
+        base_xp = 300
+        cooldown = 60
+    else:
+        embed_color, leveling_formula, base_xp, cooldown = result
+        embed_color = embed_color or 0x3498DB  # Default blue if no color is set
+        leveling_formula = leveling_formula or "linear"
+        base_xp = base_xp or 300
+        cooldown = cooldown or 60
+
+    # Design the embed
+    embed = discord.Embed(
+        title="Leveling Settings",
+        description="Here are the current leveling settings for this server:",
+        color=embed_color,
+    )
+    embed.add_field(name="📊 Base XP", value=f"`{base_xp}` XP required to reach level 1", inline=False)
+    embed.add_field(name="📈 Formula", value=f"`{leveling_formula.capitalize()}` formula for XP progression", inline=False)
+    embed.add_field(name="⏱️ Cooldown", value=f"`{cooldown} seconds` cooldown between earning XP", inline=False)
+
+    # Add some flair to the footer or thumbnail
+    embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else None)
+    embed.set_footer(text="Manage these settings with /set_leveling_formula, /set_xp_cooldown cooldown and /set_base_xp base_xp")
+
+    # Send the embed
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 @bot.tree.command(name="remove_level_role", description="Remove a role from a specific level.")
 @app_commands.describe(level="The level to remove the role from.")
@@ -572,28 +715,25 @@ CREATE TABLE IF NOT EXISTS sync_guilds (
 conn.commit()
 
 @bot.tree.command(
-    name="add_sync_guild",
+    name="addsyncguild",
     description="Add a guild to the XP sync list."
 )
 @app_commands.describe(guild_id="The ID of the guild to add to the sync list.")
-async def add_sync_guild(interaction: discord.Interaction, guild_id: str):
-    if not interaction.user.guild_permissions.administrator:
+async def addsyncguild(interaction: discord.Interaction, guild_id: str):
+    # Check if the user is an admin
+    if not is_admin(interaction):
         await interaction.response.send_message(
-            "You need to be an administrator to use this command.", ephemeral=True
+            "You must be an administrator to use this command.", ephemeral=True
         )
         return
 
-    try:
-        guild_id = int(guild_id)
-        c.execute("INSERT OR IGNORE INTO sync_guilds (guild_id) VALUES (?)", (guild_id,))
-        conn.commit()
-        await interaction.response.send_message(
-            f"Guild with ID {guild_id} has been added to the XP sync list.", ephemeral=False
-        )
-    except ValueError:
-        await interaction.response.send_message(
-            "Invalid guild ID. Please provide a valid numeric guild ID.", ephemeral=True
-        )
+    # Add the guild to the sync list
+    guild_id = int(guild_id)
+    c.execute("INSERT OR IGNORE INTO sync_guilds (guild_id) VALUES (?)", (guild_id,))
+    conn.commit()
+    await interaction.response.send_message(
+        f"Guild with ID {guild_id} has been added to the XP sync list.", ephemeral=False
+    )
 
 @bot.tree.command(
     name="remove_sync_guild",
@@ -620,23 +760,40 @@ async def remove_sync_guild(interaction: discord.Interaction, guild_id: str):
         )
 
 @bot.tree.command(
-    name="view_sync_guilds",
-    description="View the list of guilds in the XP sync list."
+    name="view_synced_guilds",
+    description="View all guilds synced for XP synchronization."
 )
-async def view_sync_guilds(interaction: discord.Interaction):
+async def view_synced_guilds(interaction: discord.Interaction):
+    """
+    Display the list of synced guilds as an embed with their names, IDs, and icons.
+    """
+    # Fetch synced guild IDs from the database
     c.execute("SELECT guild_id FROM sync_guilds")
-    guilds = c.fetchall()
+    sync_guilds = [row[0] for row in c.fetchall()]
 
-    if guilds:
-        guild_list = "\n".join([f"- {guild_id[0]}" for guild_id in guilds])
-        await interaction.response.send_message(
-            f"The following guilds are in the XP sync list:\n{guild_list}", ephemeral=False
-        )
-    else:
-        await interaction.response.send_message(
-            "No guilds are currently in the XP sync list.", ephemeral=False
-        )
+    if not sync_guilds:
+        await interaction.response.send_message("No guilds are currently synced for XP synchronization.", ephemeral=True)
+        return
 
+    embed = discord.Embed(
+        title="Synced Guilds",
+        description="The following guilds are synced for XP synchronization:",
+        color=discord.Color.blue()
+    )
+
+    # Add each guild to the embed
+    for guild_id in sync_guilds:
+        guild = bot.get_guild(guild_id)
+        if guild:
+            embed.add_field(
+                name=guild.name,
+                value=f"ID: `{guild.id}`",
+                inline=False
+            )
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+
+    await interaction.response.send_message(embed=embed)
 @tasks.loop(minutes=30)  # Adjust the interval as needed
 async def sync_xp_across_selected_guilds():
     """
@@ -726,10 +883,10 @@ async def force_sync(interaction: discord.Interaction):
         print(f"Syncing guilds: {sync_guilds}")
 
         # Consolidate XP and level for users across the selected guilds
-        c.execute(""" 
+        c.execute("""
             SELECT user_id, MAX(xp) as max_xp
             FROM user_xp
-            WHERE guild_id IN ({} )
+            WHERE guild_id IN ({})
             GROUP BY user_id
         """.format(", ".join(["?"] * len(sync_guilds))), sync_guilds)
         user_xp_data = c.fetchall()
@@ -853,6 +1010,253 @@ async def myprofile(interaction: discord.Interaction):
             "An error occurred while retrieving your profile. Please try again later.", ephemeral=True
         )
 
+from discord import ui
+from discord import SelectOption, app_commands, ButtonStyle
+from discord.ui import View, Select, Button
+
+class AssignMultipleCommandsView(View):
+    def __init__(self, command_names, roles):
+        super().__init__()
+        self.selected_commands = []
+        self.selected_role = None
+
+        # Dropdown for commands (multiple selection allowed)
+        self.command_select = Select(
+            placeholder="Select commands...",
+            options=[
+                SelectOption(label=command_name, value=command_name)
+                for command_name in command_names
+            ],
+            min_values=1,  # Minimum number of commands to select
+            max_values=len(command_names),  # Maximum number of commands
+        )
+        self.command_select.callback = self.select_commands
+        self.add_item(self.command_select)
+
+        # Dropdown for roles
+        self.role_select = Select(
+            placeholder="Select a role...",
+            options=[
+                SelectOption(label=role.name, value=str(role.id))
+                for role in roles
+            ],
+            min_values=1,
+            max_values=1,  # Only one role can be selected
+        )
+        self.role_select.callback = self.select_role
+        self.add_item(self.role_select)
+
+        # Submit button
+        self.submit_button = Button(label="Submit", style=ButtonStyle.green)
+        self.submit_button.callback = self.submit
+        self.add_item(self.submit_button)
+
+    async def select_commands(self, interaction: discord.Interaction):
+        self.selected_commands = self.command_select.values
+        await interaction.response.defer()
+
+    async def select_role(self, interaction: discord.Interaction):
+        self.selected_role = self.role_select.values[0]
+        await interaction.response.defer()
+
+    async def submit(self, interaction: discord.Interaction):
+        if not self.selected_commands or not self.selected_role:
+            await interaction.response.send_message(
+                "Please select at least one command and a role before submitting.",
+                ephemeral=True
+            )
+            return
+
+        # Save to the database for all selected commands
+        guild_id = interaction.guild.id
+        for command_name in self.selected_commands:
+            c.execute("""
+                INSERT INTO command_roles (guild_id, command_name, role_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT (guild_id, command_name) DO UPDATE SET role_id = ?
+            """, (guild_id, command_name, int(self.selected_role), int(self.selected_role)))
+        conn.commit()
+
+        await interaction.response.send_message(
+            f"Role `{self.selected_role}` has been assigned to commands `{', '.join(self.selected_commands)}` successfully.",
+            ephemeral=True
+        )
+
+@bot.tree.command(
+    name="assign_command_role",
+    description="Assign a role to multiple commands using dropdown menus."
+)
+async def assign_command_role(interaction: discord.Interaction):
+    """
+    Display a view to assign a role to multiple commands.
+    """
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "You need to be an administrator to use this command.", ephemeral=True
+        )
+        return
+
+    # Fetch all registered commands dynamically
+    command_names = [command.name for command in bot.tree.get_commands()]
+
+    # Fetch roles dynamically from the guild
+    roles = interaction.guild.roles
+
+    # Create and send the view
+    view = AssignMultipleCommandsView(command_names, roles)
+    await interaction.response.send_message(
+        "Please select commands and a role to assign:", view=view
+    )
+
+
+@bot.tree.command(
+    name="view_command_roles",
+    description="View all roles assigned to commands for this guild."
+)
+async def view_command_roles(interaction: discord.Interaction):
+    """
+    Display the roles assigned to each command in the guild.
+    """
+    # Check if the user is an admin
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "You need to be an administrator to use this command.", ephemeral=True
+        )
+        return
+
+    guild_id = interaction.guild.id
+
+    # Fetch the roles assigned to commands in this guild
+    c.execute("SELECT command_name, role_id FROM command_roles WHERE guild_id = ?", (guild_id,))
+    roles = c.fetchall()
+
+    if not roles:
+        await interaction.response.send_message(
+            "No roles have been assigned to commands in this guild.", ephemeral=True
+        )
+        return
+
+    response = "\n".join([f"Command: `{row[0]}`, Role ID: `{row[1]}`" for row in roles])
+    await interaction.response.send_message(f"Roles assigned to commands:\n{response}", ephemeral=False)
+
+from discord import Embed, SelectOption, ButtonStyle
+from discord.ui import View, Select, Button
+
+class RemoveCommandRoleView(View):
+    def __init__(self, command_names):
+        super().__init__()
+        self.selected_command = None
+
+        # Dropdown for commands
+        self.command_select = Select(
+            placeholder="Select a command to remove its assigned role...",
+            options=[
+                SelectOption(label=command_name, value=command_name)
+                for command_name in command_names
+            ],
+            min_values=1,
+            max_values=1,  # Only one command can be selected
+        )
+        self.command_select.callback = self.select_command
+        self.add_item(self.command_select)
+
+        # Submit button
+        self.submit_button = Button(label="Submit", style=ButtonStyle.green)
+        self.submit_button.callback = self.submit
+        self.add_item(self.submit_button)
+
+        # Cancel button
+        self.cancel_button = Button(label="Cancel", style=ButtonStyle.red)
+        self.cancel_button.callback = self.cancel
+        self.add_item(self.cancel_button)
+
+    async def select_command(self, interaction: discord.Interaction):
+        self.selected_command = self.command_select.values[0]
+        await interaction.response.defer()
+
+    async def submit(self, interaction: discord.Interaction):
+        if not self.selected_command:
+            await interaction.response.send_message(
+                "Please select a command before submitting.", ephemeral=True
+            )
+            return
+
+        # Remove the role assignment for the selected command
+        guild_id = interaction.guild.id
+        c.execute("DELETE FROM command_roles WHERE guild_id = ? AND command_name = ?", (guild_id, self.selected_command))
+        conn.commit()
+
+        # Send confirmation
+        embed = Embed(
+            title="Role Removed Successfully",
+            description=f"The role assigned to the command `{self.selected_command}` has been removed.",
+            color=0xFF0000,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def cancel(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "Command role removal has been canceled.", ephemeral=True
+        )
+        self.stop()
+
+
+@bot.tree.command(
+    name="remove_command_role",
+    description="Remove a role assignment from a command."
+)
+async def remove_command_role(interaction: discord.Interaction):
+    """
+    Display a UI to remove a role assignment from a command.
+    """
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "You need to be an administrator to use this command.", ephemeral=True
+        )
+        return
+
+    # Fetch commands that have assigned roles in this guild
+    guild_id = interaction.guild.id
+    c.execute("SELECT command_name FROM command_roles WHERE guild_id = ?", (guild_id,))
+    rows = c.fetchall()
+
+    if not rows:
+        await interaction.response.send_message(
+            "No commands currently have assigned roles in this server.", ephemeral=True
+        )
+        return
+
+    # Create a view with the commands
+    command_names = [row[0] for row in rows]
+    view = RemoveCommandRoleView(command_names)
+
+    # Send the view
+    embed = Embed(
+        title="Remove Command Role",
+        description="Select a command from the dropdown menu to remove its assigned role.",
+        color=0x3498DB,
+    )
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+def has_required_role(interaction: discord.Interaction, command_name: str) -> bool:
+    """
+    Check if the user has one of the roles required to execute a command.
+    """
+    guild_id = interaction.guild.id
+    user_roles = [role.id for role in interaction.user.roles]
+
+    # Fetch the allowed role for the command in the guild
+    c.execute("SELECT role_id FROM command_roles WHERE guild_id = ? AND command_name = ?", (guild_id, command_name))
+    result = c.fetchone()
+
+    if result:
+        required_role_id = result[0]
+        return required_role_id in user_roles
+
+    # If no role restriction is set, allow the command
+    return True
+
 
 # Run the bot
-bot.run("abcdefghijklmnopqrstuvwxyz")
+bot.run("12345678")
