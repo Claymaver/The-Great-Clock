@@ -35,8 +35,8 @@ Rivet is a customizable Discord bot designed to manage user leveling systems, as
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/yourusername/klunk.git
-   cd klunk
+   git clone https://github.com/yourusername/Rivet.git
+   cd Rivet
    ```
 
 2. **Install Dependencies**:
@@ -46,9 +46,7 @@ Rivet is a customizable Discord bot designed to manage user leveling systems, as
    ```
 
 3. **Configure Your Bot Token**:
-   - Create a `.env` file in the root directory and add your bot token:
-     ```env
-     BOT_TOKEN=your_discord_bot_token
+   - open the python main.py file and scroll to the bottom and input your bot token
      ```
 
 4. **Initialize the Database**:
