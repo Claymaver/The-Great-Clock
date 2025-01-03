@@ -80,6 +80,7 @@ Start the bot with:
 ```bash
 python main.py
 ```
+there is also a bat file included to lauch it with instead
 
 ### Inviting the Bot to Your Server
 Use the OAuth2 URL generated from the Discord Developer Portal to invite your bot:
