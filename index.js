@@ -1,642 +1,760 @@
-const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes } = require('discord.js');
-const { scheduleJob } = require('node-schedule');
-
-const TOKEN = '1234';
-const CLIENT_ID = '123';
-
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-
-const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('leveling.db', (err) => {
-    if (err) console.error(err.message);
-    console.log('Connected to the leveling database.');
-});
-
-// Create the tables with the correct schema
-db.run(`CREATE TABLE IF NOT EXISTS user_xp (
-  user_id INTEGER NOT NULL,
-  guild_id INTEGER NOT NULL,
-  xp REAL DEFAULT 0,
-  PRIMARY KEY (user_id, guild_id)
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS guild_settings (
-    guild_id INTEGER PRIMARY KEY,
-    base_xp INTEGER DEFAULT 100,
-    formula TEXT DEFAULT 'linear',
-    cooldown INTEGER DEFAULT 60
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS level_roles (
-  level INTEGER NOT NULL,
-  role_id INTEGER NOT NULL,
-  guild_id INTEGER NOT NULL,
-  PRIMARY KEY (level, guild_id)
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS user_activity (
-    user_id INTEGER NOT NULL,
-    guild_id INTEGER NOT NULL,
-    last_xp_time INTEGER,
-    PRIMARY KEY (user_id, guild_id)
-)`);
-
-// Alter existing tables if necessary
-db.run(`ALTER TABLE user_xp ADD COLUMN guild_id INTEGER`, (err) => {
-  if (err && !err.message.includes('duplicate column name')) {
-      console.error('Error adding guild_id column to user_xp:', err.message);
-  }
-});
-
-db.run(`ALTER TABLE level_roles ADD COLUMN guild_id INTEGER`, (err) => {
-  if (err && !err.message.includes('duplicate column name')) {
-      console.error('Error adding guild_id column to level_roles:', err.message);
-  }
-});
+const {
+    Client,
+    GatewayIntentBits,
+    REST,
+    Routes,
+    SlashCommandBuilder,
+    EmbedBuilder,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ActionRowBuilder,
+    StringSelectMenuBuilder,
+    ButtonBuilder,
+    ButtonStyle
+} = require('discord.js');
+require('dotenv').config();
 
 const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildMessageReactions
+    ]
 });
 
-const commands = [
-  {
-      name: 'profile',
-      description: 'View your current level and XP progress',
-  },
-  {
-    name: 'setxp',
-    description: 'Set a user\'s XP or level manually.',
-    options: [
-        {
-            type: 6, // USER
-            name: 'user',
-            description: 'The user to set XP or level for',
-            required: true,
-        },
-        {
-            type: 4, // INTEGER
-            name: 'xp',
-            description: 'The amount of XP to set',
-            required: false,
-        },
-        {
-            type: 4, // INTEGER
-            name: 'level',
-            description: 'The level to set (XP will be calculated)',
-            required: false,
+const tempEmbedData = {};
 
-          },
-      ],
-  },
-  {
-      name: 'setlevelrole',
-      description: 'Set a role to be applied when a user reaches a specific level.',
-      options: [
-          {
-              type: 4, // INTEGER
-              name: 'level',
-              description: 'The level at which the role will be applied.',
-              required: true,
-          },
-          {
-              type: 8, // ROLE
-              name: 'role',
-              description: 'The role to apply at the specified level.',
-              required: true,
-          },
-      ],
-  },
-  {
-      name: 'settings',
-      description: 'View or update XP settings.',
-      options: [
-          {
-              type: 1, // SUB_COMMAND
-              name: 'view',
-              description: 'View the current XP settings.',
-          },
-          {
-              type: 1, // SUB_COMMAND
-              name: 'update',
-              description: 'Update XP settings.',
-              options: [
-                  {
-                      type: 4, // INTEGER
-                      name: 'base_xp',
-                      description: 'Base XP required for leveling',
-                      required: true,
-                  },
-                  {
-                      type: 4, // INTEGER
-                      name: 'cooldown',
-                      description: 'Cooldown time in seconds',
-                      required: true,
-                  },
-              ],
-          },
-      ],
-  },
+const Database = require('better-sqlite3');
+require('dotenv').config();
+
+// Initialize Database
+const db = new Database('leveling.db', { verbose: console.log });
+db.exec(`
+    CREATE TABLE IF NOT EXISTS user_xp (
+        user_id TEXT PRIMARY KEY,
+        xp REAL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS level_roles (
+        level INTEGER NOT NULL,
+        guild_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        PRIMARY KEY (level, guild_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_settings (
+        guild_id TEXT PRIMARY KEY,
+        base_xp INTEGER DEFAULT 300,
+        multiplier REAL DEFAULT 1.11
+    );
+
+`);
+
+// Ensure schema is updated
+try {
+    db.prepare(`SELECT multiplier FROM guild_settings LIMIT 1`).get();
+} catch (error) {
+    console.log("Updating schema: Adding 'multiplier' column to 'guild_settings'.");
+    db.exec(`ALTER TABLE guild_settings ADD COLUMN multiplier REAL DEFAULT 1.11`);
+}
+
+// Ensure Guild Settings
+function ensureGuildSettings() {
+    db.prepare(`
+        INSERT INTO guild_settings (guild_id, base_xp, multiplier)
+        VALUES ('global', 300, 1.11)
+        ON CONFLICT(guild_id) DO NOTHING
+    `).run();
+}
+
+function calculateLevel(xp, baseXp, multiplier) {
+    let level = 1;
+    let xpForCurrentLevel = baseXp; // Start with base XP for level 1
+
+    while (xp >= xpForCurrentLevel) {
+        xp -= xpForCurrentLevel; // Subtract XP required for the current level
+        level++;
+        xpForCurrentLevel = Math.ceil(baseXp * Math.pow(multiplier, level - 1)); // Exponential growth for each level
+    }
+
+    return level;
+}
+
+// Calculate XP required for a specific level
+function calculateTotalXpForLevel(level, baseXp, multiplier) {
+    let totalXp = 0;
+
+    for (let i = 1; i < level; i++) {
+        totalXp += baseXp * Math.pow(multiplier, i - 1); // XP for each level
+    }
+
+    return totalXp;
+}
+
+const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+
+// Register Commands
+const commands = [
+    new SlashCommandBuilder()
+        .setName('setbasexp')
+        .setDescription('Set the base XP value for leveling.')
+        .addIntegerOption(option =>
+            option.setName('value')
+                .setDescription('The new base XP value.')
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('setmultiplier')
+        .setDescription('Set the XP multiplier for leveling.')
+        .addNumberOption(option =>
+            option.setName('value')
+                .setDescription('The multiplier (defualt 1.11.')
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('setlevelrole')
+        .setDescription('Set a role to be applied when a user reaches a specific level.')
+        .addIntegerOption(option =>
+            option.setName('level')
+                .setDescription('The level at which the role will be applied.')
+                .setRequired(true))
+        .addRoleOption(option =>
+            option.setName('role')
+                .setDescription('The role to assign.')
+                .setRequired(true)),
+                new SlashCommandBuilder()
+                .setName('setxp')
+                .setDescription('Set a user\'s global XP or level manually.')
+                .addUserOption(option =>
+                    option.setName('user')
+                        .setDescription('The user whose global XP or level you want to set.')
+                        .setRequired(true))
+                .addIntegerOption(option =>
+                    option.setName('xp')
+                        .setDescription('The global XP amount to set.'))
+                .addIntegerOption(option =>
+                    option.setName('level')
+                        .setDescription('The level to set (overrides XP).')),
+            
+    new SlashCommandBuilder()
+        .setName('importuserdata')
+        .setDescription('Import user data from a JSON file to update XP.')
+        .addAttachmentOption(option =>
+            option.setName('file')
+                .setDescription('The JSON file to import user data from.')
+                .setRequired(true)),
+                new SlashCommandBuilder()
+    .setName('profile')
+    .setDescription('View your profile or another user\'s profile.')
+    .addUserOption(option =>
+        option.setName('user')
+            .setDescription('The user whose profile you want to view.')
+            .setRequired(false)),
+            new SlashCommandBuilder()
+        .setName('sendembed')
+        .setDescription('Create and send an embed to multiple servers and channels.')
+
 ];
 
 (async () => {
-  try {
-      console.log('Refreshing application commands...');
-      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-      console.log('Successfully registered application commands.');
-  } catch (error) {
-      console.error('Error registering application commands:', error);
-  }
+    try {
+        console.log('Registering commands...');
+        await rest.put(
+            Routes.applicationCommands(process.env.CLIENT_ID),
+            { body: commands.map(command => command.toJSON()) }
+        );
+        console.log('Commands registered successfully.');
+    } catch (error) {
+        console.error('Error registering commands:', error);
+    }
 })();
 
-function calculateLevel(xp, baseXp = 100) {
-  return Math.floor(Math.sqrt(xp / baseXp));
-}
+// Function to generate progress bar
+function generateProgressBar(currentXp, xpForNextLevel, barLength = 20) {
+    const progress = Math.max(0, Math.min(currentXp / xpForNextLevel, 1)); // Ensure progress is between 0 and 1
+    const filledLength = Math.floor(progress * barLength);
+    const emptyLength = barLength - filledLength;
 
-function canEarnXp(userId, guildId) {
-  return new Promise((resolve) => {
-      const currentTime = Math.floor(Date.now() / 1000);
-
-      db.get(
-          `SELECT user_activity.last_xp_time, guild_settings.cooldown
-           FROM user_activity
-           LEFT JOIN guild_settings ON guild_settings.guild_id = user_activity.guild_id
-           WHERE user_activity.user_id = ? AND user_activity.guild_id = ?`,
-          [userId, guildId],
-          (err, row) => {
-              if (err) {
-                  console.error(`Error in canEarnXp query:`, err);
-                  return resolve(false);
-              }
-              if (row && row.last_xp_time && row.cooldown) {
-                  resolve(currentTime - row.last_xp_time >= row.cooldown);
-              } else {
-                  resolve(true);
-              }
-          }
-      );
-  });
-}
-
-function updateUserXp(userId, guildId, xpGain) {
-  return new Promise((resolve) => {
-      db.run(
-          `INSERT INTO user_xp (user_id, guild_id, xp)
-           VALUES (?, ?, ?)
-           ON CONFLICT(user_id, guild_id) DO UPDATE SET xp = xp + excluded.xp`,
-          [userId, guildId, xpGain],
-          (err) => {
-              if (err) {
-                  console.error(`Error updating XP for user ${userId} in guild ${guildId}:`, err);
-                  return resolve(0);
-              }
-              db.get(
-                  `SELECT xp FROM user_xp WHERE user_id = ? AND guild_id = ?`,
-                  [userId, guildId],
-                  (err, row) => {
-                      if (err) {
-                          console.error(`Error fetching XP for user ${userId} in guild ${guildId}:`, err);
-                          return resolve(0);
-                      }
-                      resolve(row ? row.xp : 0);
-                  }
-              );
-          }
-      );
-  });
-}
-
-function updateLastXpTime(userId, guildId) {
-  if (!guildId) {
-      console.error(`updateLastXpTime called with undefined guildId for user ${userId}`);
-      return;
-  }
-
-  const currentTime = Math.floor(Date.now() / 1000);
-
-  db.run(
-      `INSERT INTO user_activity (user_id, guild_id, last_xp_time)
-       VALUES (?, ?, ?)
-       ON CONFLICT(user_id, guild_id) DO UPDATE SET last_xp_time = excluded.last_xp_time`,
-      [userId, guildId, currentTime],
-      (err) => {
-          if (err) {
-              console.error(`Error updating last XP time for user ${userId} in guild ${guildId}:`, err);
-          } else {
-              console.log(`Updated last XP time for user ${userId} in guild ${guildId}.`);
-          }
-      }
-  );
-}
-
-async function assignRoles(member, level, guild) {
-  try {
-      const roles = await new Promise((resolve, reject) => {
-          db.all(
-              `SELECT level, role_id FROM level_roles WHERE guild_id = ? ORDER BY level ASC`,
-              [guild.id],
-              (err, rows) => {
-                  if (err) {
-                      reject(err);
-                  } else {
-                      resolve(rows);
-                  }
-              }
-          );
-      });
-
-      console.log(`Roles fetched from the database for guild '${guild.name}':`);
-      roles.forEach(({ level: lvl, role_id }) => {
-          console.log(`Level: ${lvl}, Role ID: ${role_id}`);
-      });
-
-      const rolesToRemove = [];
-      let highestRole = null;
-
-      // Determine which roles to remove and the highest role to assign
-      roles.forEach(({ level: requiredLevel, role_id }) => {
-          const role = guild.roles.cache.get(role_id);
-          if (role) {
-              if (level >= requiredLevel) {
-                  highestRole = role; // Highest role the user qualifies for
-              } else {
-                  rolesToRemove.push(role); // Roles higher than the user's level
-              }
-          } else {
-              console.warn(
-                  `Role with ID ${role_id} does not exist in the guild '${guild.name}'.`
-              );
-          }
-      });
-
-      // Remove roles no longer applicable
-      for (const role of member.roles.cache.values()) {
-          if (rolesToRemove.includes(role)) {
-              await member.roles.remove(role);
-              console.log(`Removed role '${role.name}' from ${member.displayName}.`);
-          }
-      }
-
-      // Assign the highest qualifying role
-      if (highestRole && !member.roles.cache.has(highestRole.id)) {
-          await member.roles.add(highestRole);
-          console.log(
-              `Assigned role '${highestRole.name}' to ${member.displayName} for reaching level ${level}.`
-          );
-      } else if (!highestRole) {
-          console.log(`No valid roles found for level ${level} in guild '${guild.name}'.`);
-      } else {
-          console.log(`No new role to assign for ${member.displayName}.`);
-      }
-  } catch (error) {
-      console.error(
-          `Error assigning roles for ${member.displayName} in guild '${guild.name}':`,
-          error
-      );
-  }
+    return '█'.repeat(filledLength) + '░'.repeat(emptyLength); // Create the progress bar
 }
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isCommand()) return;
+    if (!interaction.isCommand()) return;
 
-  const commandName = interaction.commandName;
+    const { commandName } = interaction;
+    const guildId = interaction.guild?.id;
 
-  if (commandName === 'profile') {
-      const userId = interaction.user.id;
+    if (commandName === 'setbasexp') {
+        const baseXp = interaction.options.getInteger('value');
+        ensureGuildSettings(guildId);
 
-      db.get(`SELECT xp FROM user_xp WHERE user_id = ?`, [userId], (err, row) => {
-          if (err) {
-              console.error(`Error fetching XP for user ${userId}:`, err);
-              const embed = new EmbedBuilder()
-                  .setTitle('Error 🚫')
-                  .setDescription('An error occurred while fetching your profile. Please try again later.')
-                  .setColor('#FF0000')
-                  .setFooter({ text: 'Leveling System', iconURL: interaction.guild.iconURL() });
-              interaction.reply({ embeds: [embed] });
-              return;
-          }
+        try {
+            db.prepare(`
+                UPDATE guild_settings SET base_xp = ? WHERE guild_id = ?
+            `).run(baseXp, guildId);
 
-          if (!row) {
-              const embed = new EmbedBuilder()
-                  .setTitle('No Data 📊')
-                  .setDescription('You haven’t earned any XP yet. Start participating to earn XP!')
-                  .setColor('#FFA500')
-                  .setFooter({ text: 'Leveling System', iconURL: interaction.guild.iconURL() });
-              interaction.reply({ embeds: [embed] });
-              return;
-          }
-
-          const xp = parseFloat(row.xp.toFixed(2)); // Round XP to two decimal places
-          const level = calculateLevel(xp);
-          const baseXp = 100; // Default XP required for level-up, or fetch from DB if configurable.
-          const nextLevelXp = Math.pow(level + 1, 2) * baseXp;
-          const currentLevelXp = Math.pow(level, 2) * baseXp;
-          const progress = xp - currentLevelXp;
-          const progressPercentage = Math.floor((progress / (nextLevelXp - currentLevelXp)) * 100);
-
-          const xpNeededForNextLevel = (nextLevelXp - xp).toFixed(2);
-
-          // XP per message is assumed to be between 1 and 5 (inclusive)
-          const avgXpPerMessage = 3; // Average XP per message
-          const messagesNeeded = Math.ceil((nextLevelXp - xp) / avgXpPerMessage);
-
-          // Create a progress bar
-          const progressBar = createProgressBar(progressPercentage);
-
-          const embed = new EmbedBuilder()
-              .setTitle(`${interaction.user.username}'s Profile 🧾`)
-              .setDescription(
-                  `**Level:** ${level}\n` +
-                  `**XP:** ${xp} / ${nextLevelXp.toFixed(2)}\n\n` +
-                  `**Progress:**\n${progressBar} (${progressPercentage}%)\n\n` +
-                  `**XP to Next Level:** ${xpNeededForNextLevel}\n` +
-                  `**Estimated Messages Needed:** ~${messagesNeeded}`
-              )
-              .setColor('#3498DB')
-              .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
-              .setFooter({ text: 'Leveling System', iconURL: interaction.guild.iconURL() });
-
-          interaction.reply({ embeds: [embed] });
-      });
-  }
-});
-
-/**
-* Generates a text-based progress bar on one line.
-* @param {number} percentage - The progress percentage (0-100).
-* @returns {string} - A progress bar string.
-*/
-function createProgressBar(percentage) {
-  const totalBars = 20; // Total number of bars in the progress bar.
-  const filledBars = Math.floor((percentage / 100) * totalBars);
-  const emptyBars = totalBars - filledBars;
-
-  const bar = '🟩'.repeat(filledBars) + '⬜'.repeat(emptyBars);
-  return bar;
-}
-
-
-
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isCommand()) return;
-
-  const commandName = interaction.commandName; // Properly define commandName
-
-  if (commandName === 'settings') {
-      const subcommand = interaction.options.getSubcommand();
-
-      if (subcommand === 'view') {
-          db.get(`SELECT * FROM guild_settings WHERE guild_id = ?`, [interaction.guild.id], (err, row) => {
-              if (err || !row) {
-                  const embed = new MessageEmbed()
-                      .setTitle('Error 🚫')
-                      .setDescription('No settings found.')
-                      .setColor('#FF0000');
-                  return interaction.reply({ embeds: [embed] });
-              }
-
-              const embed = new MessageEmbed()
-                  .setTitle('Guild Settings ⚙️')
-                  .setDescription(`**Base XP:** ${row.base_xp}\n**Cooldown:** ${row.cooldown} seconds`)
-                  .setColor('#3498DB');
-              interaction.reply({ embeds: [embed] });
-          });
-      }
-
-      if (subcommand === 'update') {
-          const baseXp = interaction.options.getInteger('base_xp');
-          const cooldown = interaction.options.getInteger('cooldown');
-
-          db.run(
-              `INSERT INTO guild_settings (guild_id, base_xp, cooldown)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET base_xp = excluded.base_xp, cooldown = excluded.cooldown`,
-              [interaction.guild.id, baseXp, cooldown],
-              (err) => {
-                  if (err) {
-                      const embed = new MessageEmbed()
-                          .setTitle('Error 🚫')
-                          .setDescription('Failed to update settings.')
-                          .setColor('#FF0000');
-                      return interaction.reply({ embeds: [embed] });
-                  }
-
-                  const embed = new MessageEmbed()
-                      .setTitle('Settings Updated ✅')
-                      .setDescription(`**Base XP:** ${baseXp}\n**Cooldown:** ${cooldown} seconds`)
-                      .setColor('#00FF00');
-                  interaction.reply({ embeds: [embed] });
-              }
-          );
-      }
-  }
-
-});
-
-
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isCommand()) return;
-
-  const commandName = interaction.commandName;
-
-  if (commandName === 'setlevelrole') {
-    if (!interaction.member.permissions.has('ADMINISTRATOR')) {
-        const embed = new MessageEmbed()
-            .setTitle('Insufficient Permissions 🚫')
-            .setDescription('You need to be an administrator to use this command.')
-            .setColor('#FF0000')
-            .setFooter('Leveling System', interaction.guild.iconURL());
-        return interaction.reply({ embeds: [embed], ephemeral: true });
+            await interaction.reply({
+                embeds: [new EmbedBuilder()
+                    .setTitle('Base XP Updated ✅')
+                    .setDescription(`Base XP set to **${baseXp}**.`)
+                    .setColor('#00FF00')],
+            });
+        } catch (error) {
+            console.error('Error updating Base XP:', error);
+            await interaction.reply({ content: 'Failed to update Base XP.', flags: 64 });
+        }
     }
 
-    const level = interaction.options.getInteger('level');
-    const role = interaction.options.getRole('role');
-    const guildId = interaction.guild.id;
+    if (commandName === 'setmultiplier') {
+        const multiplier = interaction.options.getNumber('value');
+        ensureGuildSettings(guildId);
 
-    db.run(
-        `INSERT INTO level_roles (level, guild_id, role_id) VALUES (?, ?, ?) 
-         ON CONFLICT(level, guild_id, role_id) DO NOTHING`,
-        [level, guildId, role.id],
-        (err) => {
-            if (err) {
-                console.error(`Error setting role for level ${level} in guild ${guildId}:`, err);
-                const embed = new MessageEmbed()
-                    .setTitle('Error 🚫')
-                    .setDescription('Failed to set the level role. Please try again later.')
-                    .setColor('#FF0000')
-                    .setFooter('Leveling System', interaction.guild.iconURL());
-                return interaction.reply({ embeds: [embed] });
-            }
+        try {
+            db.prepare(`
+                UPDATE guild_settings SET multiplier = ? WHERE guild_id = ?
+            `).run(multiplier, guildId);
 
-            const embed = new MessageEmbed()
-                .setTitle('Level Role Set ✅')
-                .setDescription(`The role **${role.name}** will now be applied at level **${level}** in this guild.`)
-                .setColor('#00FF00')
-                .setFooter('Leveling System', interaction.guild.iconURL());
-            interaction.reply({ embeds: [embed] });
+            await interaction.reply({
+                embeds: [new EmbedBuilder()
+                    .setTitle('Multiplier Updated ✅')
+                    .setDescription(`Multiplier updated to **${multiplier}**.`)
+                    .setColor('#00FF00')],
+            });
+        } catch (error) {
+            console.error('Error updating multiplier:', error);
+            await interaction.reply({ content: 'Failed to update multiplier.', flags: 64 });
         }
-    );
-}
+    }
+
+    if (commandName === 'setxp') {
+        const user = interaction.options.getUser('user');
+        const xp = interaction.options.getInteger('xp');
+        const level = interaction.options.getInteger('level');
+    
+        try {
+            // Ensure global settings exist
+            ensureGuildSettings();
+    
+            let finalXp = xp;
+    
+            // Fetch global settings for XP and multiplier
+            const settings = db.prepare(`
+                SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
+            `).get();
+    
+            if (!settings) {
+                throw new Error('Global settings not found. Please ensure the guild settings are initialized.');
+            }
+    
+            const { base_xp: baseXp, multiplier } = settings;
+    
+            // If level is provided, calculate the corresponding XP
+            if (level !== null) {
+                if (level <= 0) {
+                    throw new Error('Level must be greater than 0.');
+                }
+                finalXp = calculateTotalXpForLevel(level, baseXp, multiplier);
+            }
+    
+            // Ensure XP is valid
+            if (finalXp === null || finalXp < 0) {
+                throw new Error('Invalid XP value calculated.');
+            }
+    
+            // Update XP in the database
+            db.prepare(`
+                INSERT INTO user_xp (user_id, xp)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET xp = excluded.xp
+            `).run(user.id, finalXp);
+    
+            // Calculate the new level
+            const newLevel = calculateLevel(finalXp, baseXp, multiplier);
+    
+            // Send success response
+            await interaction.reply({
+                embeds: [new EmbedBuilder()
+                    .setTitle('XP Updated ✅')
+                    .setDescription(`Set XP for **${user.username}** to **${finalXp}**.\nCurrent Level: **${newLevel}**.`)
+                    .setColor('#00FF00')],
+            });
+        } catch (error) {
+            console.error('Error setting XP:', error);
+    
+            // Send error response
+            await interaction.reply({
+                content: `Failed to set XP. Error: ${error.message}`,
+                flags: 64,
+            });
+        }
+    }
+
+    if (commandName === 'setlevelrole') {
+        const level = interaction.options.getInteger('level');
+        const role = interaction.options.getRole('role');
+
+        try {
+            ensureGuildSettings(guildId);
+
+            db.prepare(`
+                INSERT INTO level_roles (level, guild_id, role_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(level, guild_id) DO UPDATE SET role_id = excluded.role_id
+            `).run(level, guildId, role.id);
+
+            await interaction.reply({
+                embeds: [new EmbedBuilder()
+                    .setTitle('Level Role Set ✅')
+                    .setDescription(`Role **${role.name}** will now be assigned at level **${level}**.`)
+                    .setColor('#00FF00')],
+            });
+        } catch (error) {
+            console.error('Error setting level role:', error);
+            await interaction.reply({ content: 'Failed to set level role.', flags: 64 });
+        }
+    }
+
+    if (commandName === 'importuserdata') {
+        const fileAttachment = interaction.options.getAttachment('file');
+    
+        if (!fileAttachment || !fileAttachment.name.endsWith('.json')) {
+            return interaction.reply({
+                content: 'Please upload a valid JSON file.',
+                flags: 64,
+            });
+        }
+    
+        await interaction.reply({ content: 'Processing the file... Please wait.', flags: 64 });
+    
+        try {
+            const response = await fetch(fileAttachment.url);
+            const fileContent = await response.text();
+            const jsonData = JSON.parse(fileContent);
+    
+            if (!jsonData.users) {
+                return interaction.editReply({
+                    content: 'The uploaded file does not contain valid user data.',
+                });
+            }
+    
+            const insertUserXpStmt = db.prepare(`
+                INSERT INTO user_xp (user_id, xp)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET xp = excluded.xp
+            `);
+    
+            // Fetch global settings for XP calculation
+            const { base_xp: baseXp, multiplier } = db.prepare(`
+                SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
+            `).get() || { base_xp: 300, multiplier: 1.11 };
+    
+            let importedCount = 0;
+    
+            for (const userId in jsonData.users) {
+                const userData = jsonData.users[userId];
+                const level = userData.level || 1; // Default to level 1 if not provided
+    
+                // Calculate corresponding XP for the given level
+                const totalXp = calculateTotalXpForLevel(level, baseXp, multiplier);
+    
+                // Insert or update the user's XP in the database
+                insertUserXpStmt.run(userId, totalXp);
+                importedCount++;
+    
+                console.log(`Imported User: ${userId}, Level: ${level}, XP: ${totalXp}`);
+            }
+    
+            await interaction.editReply({
+                embeds: [new EmbedBuilder()
+                    .setTitle('User Data Imported Successfully ✅')
+                    .setDescription(`Imported data for **${importedCount} users**.`)
+                    .setColor('#00FF00')],
+            });
+        } catch (error) {
+            console.error('Error importing user data:', error);
+            await interaction.editReply({
+                content: 'An error occurred while importing the user data. Please try again later.',
+            });
+        }
+    }
+    
+    if (commandName === 'profile') {
+        const user = interaction.options.getUser('user') || interaction.user;
+    
+        try {
+            // Fetch user XP globally
+            const { xp: totalXp } = db.prepare(`
+                SELECT xp FROM user_xp WHERE user_id = ?
+            `).get(user.id) || { xp: 0 };
+    
+            // Fetch global base XP and multiplier
+            const { base_xp: baseXp, multiplier } = db.prepare(`
+                SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
+            `).get() || { base_xp: 300, multiplier: 1.11 };
+    
+            // Handle cases where total XP exceeds the expected range for the current level
+            let level = calculateLevel(totalXp, baseXp, multiplier);
+            let xpForCurrentLevel = calculateTotalXpForLevel(level, baseXp, multiplier);
+            let xpForNextLevel = calculateTotalXpForLevel(level + 1, baseXp, multiplier);
+    
+            while (totalXp >= xpForNextLevel) {
+                level++;
+                xpForCurrentLevel = xpForNextLevel;
+                xpForNextLevel = calculateTotalXpForLevel(level + 1, baseXp, multiplier);
+            }
+    
+            // Calculate XP progress
+            const xpProgress = Math.max(0, totalXp - xpForCurrentLevel);
+            const xpRequired = Math.max(1, xpForNextLevel - xpForCurrentLevel); // Prevent divide-by-zero errors
+    
+            // Progress bar logic
+            const progressBarLength = 20;
+            const progressRatio = Math.min(1, xpProgress / xpRequired); // Clamp progress ratio to [0, 1]
+            const progressBarFilled = Math.round(progressRatio * progressBarLength);
+            const progressBar = '█'.repeat(progressBarFilled) + '░'.repeat(progressBarLength - progressBarFilled);
+    
+            // Estimate messages to next level
+            const averageXpPerMessage = 3; // Adjust based on your XP gain range
+            const messagesToNextLevel = Math.max(0, Math.ceil((xpRequired - xpProgress) / averageXpPerMessage));
+    
+            // Debug logs
+            console.log(`User: ${user.username}`);
+            console.log(`Total XP: ${totalXp}`);
+            console.log(`Level: ${level}`);
+            console.log(`XP for Current Level: ${xpForCurrentLevel}`);
+            console.log(`XP for Next Level: ${xpForNextLevel}`);
+            console.log(`XP Progress: ${xpProgress}`);
+            console.log(`Progress Ratio: ${progressRatio}`);
+            console.log(`Progress Bar: ${progressBar}`);
+            console.log(`Messages to Next Level: ${messagesToNextLevel}`);
+    
+            // Create embed
+            const profileEmbed = new EmbedBuilder()
+                .setTitle(`${user.username}'s Profile`)
+                .setDescription(`Level: **${level}**\nTotal XP: **${totalXp.toFixed(2)}**`)
+                .addFields(
+                    { name: 'Progress to Next Level', value: `${progressBar} (${xpProgress.toFixed(2)} / ${xpRequired.toFixed(2)} XP)` },
+                    { name: 'Messages to Next Level', value: `${messagesToNextLevel} (approx)` }
+                )
+                .setThumbnail(user.displayAvatarURL({ dynamic: true }))
+                .setColor('#00FF00');
+    
+            await interaction.reply({ embeds: [profileEmbed] });
+        } catch (error) {
+            console.error('Error generating profile:', error);
+            await interaction.reply({
+                content: 'An error occurred while generating the profile. Please try again later.',
+                flags: 64,
+            });
+        }
+    } 
 });
 
+// In-memory cooldown map
+const xpCooldowns = new Map();
 
+// XP Tracking
+client.on('messageCreate', (message) => {
+    if (message.author.bot || !message.guild) return;
 
+    const userId = message.author.id;
+
+    // Cooldown check (60 seconds by default)
+    const cooldown = 60000; // 60 seconds in milliseconds
+    const now = Date.now();
+    if (xpCooldowns.has(userId) && now - xpCooldowns.get(userId) < cooldown) {
+        return; // User is on cooldown
+    }
+
+    xpCooldowns.set(userId, now); // Update cooldown timestamp
+
+    // Fetch base XP and multiplier globally
+    const settings = db.prepare(`
+        SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
+    `).get() || { base_xp: 300, multiplier: 1.11 };
+
+    const { base_xp: baseXp, multiplier } = settings;
+
+    if (!baseXp || !multiplier) {
+        console.error("Base XP or multiplier is missing from the settings.");
+        return;
+    }
+
+    // XP gain logic: Generate random XP gain between 1 and 5
+    const xpGain = parseFloat((Math.random() * (5 - 1) + 1).toFixed(2));
+
+    // Update or insert XP for the user
+    db.prepare(`
+        INSERT INTO user_xp (user_id, xp)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET xp = xp + excluded.xp
+    `).run(userId, xpGain);
+
+    // Fetch total XP for the user
+    const { xp: totalXp } = db.prepare(`
+        SELECT xp FROM user_xp WHERE user_id = ?
+    `).get(userId);
+
+    // Calculate the user's current level
+    const level = calculateLevel(totalXp, baseXp, multiplier);
+
+    console.log(`User '${message.author.username}' gained ${xpGain} XP, has ${totalXp.toFixed(2)} total XP, and is level ${level}.`);
+
+    // Guild-specific role assignment logic
+const rows = db.prepare(`
+    SELECT level, role_id FROM level_roles WHERE guild_id = ?
+`).all(message.guild.id);
+
+// Sort roles by level in ascending order
+rows.sort((a, b) => a.level - b.level);
+
+const rolesToRemove = [];
+let highestRole = null;
+
+rows.forEach(({ level: requiredLevel, role_id }) => {
+    const role = message.guild.roles.cache.get(role_id);
+    if (role) {
+        if (level >= requiredLevel) {
+            highestRole = role; // Keep track of the highest role user qualifies for
+        } else {
+            rolesToRemove.push(role); // Collect roles that should be removed
+        }
+    }
+});
+
+// Assign and remove roles
+const member = message.guild.members.cache.get(userId);
+if (member) {
+    // Remove all level roles except the highestRole
+    rows.forEach(({ role_id }) => {
+        const role = message.guild.roles.cache.get(role_id);
+        if (role && member.roles.cache.has(role.id) && role !== highestRole) {
+            member.roles.remove(role).then(() => {
+                console.log(`Removed role '${role.name}' from '${message.author.username}'.`);
+            }).catch(err => {
+                console.error(`Error removing role '${role.name}':`, err);
+            });
+        }
+    });
+
+    // Assign the highest qualifying role
+    if (highestRole && !member.roles.cache.has(highestRole.id)) {
+        member.roles.add(highestRole).then(() => {
+            console.log(`Assigned role '${highestRole.name}' to '${message.author.username}'.`);
+        }).catch(err => {
+            console.error(`Error assigning role '${highestRole.name}':`, err);
+        });
+    }
+}
+
+});
+
+// Embed creation command
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isCommand()) return;
+    if (!interaction.isCommand() || interaction.commandName !== 'sendembed') return;
 
-  const commandName = interaction.commandName;
+    // Step 1: Show a modal to gather embed details
+    const modal = new ModalBuilder()
+        .setCustomId('embedModal')
+        .setTitle('Create an Embed');
 
-  if (commandName === 'setxp') {
-      if (!interaction.member.permissions.has('Administrator')) {
-          const embed = new EmbedBuilder()
-              .setTitle('Insufficient Permissions 🚫')
-              .setDescription('You need to be an administrator to use this command.')
-              .setColor('#FF0000')
-              .setFooter({ text: 'Leveling System', iconURL: interaction.guild.iconURL() });
-          return interaction.reply({ embeds: [embed], ephemeral: true });
-      }
+    const titleInput = new TextInputBuilder()
+        .setCustomId('embedTitle')
+        .setLabel('Embed Title')
+        .setPlaceholder('Enter the title of the embed')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
 
-      const user = interaction.options.getUser('user');
-      const xp = interaction.options.getInteger('xp');
-      const level = interaction.options.getInteger('level'); // Optional level input
+    const descriptionInput = new TextInputBuilder()
+        .setCustomId('embedDescription')
+        .setLabel('Embed Description')
+        .setPlaceholder('Enter the description of the embed')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
 
-      let xpToSet = xp;
+    const colorInput = new TextInputBuilder()
+        .setCustomId('embedColor')
+        .setLabel('Embed Color')
+        .setPlaceholder('Enter a hex color code (e.g., #00FF00)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
 
-      if (level !== null) {
-          // If level is provided, calculate the corresponding XP based on the formula
-          const guildId = interaction.guild.id;
+    const titleRow = new ActionRowBuilder().addComponents(titleInput);
+    const descriptionRow = new ActionRowBuilder().addComponents(descriptionInput);
+    const colorRow = new ActionRowBuilder().addComponents(colorInput);
 
-          db.get(
-              `SELECT base_xp FROM guild_settings WHERE guild_id = ?`,
-              [guildId],
-              (err, row) => {
-                  if (err || !row) {
-                      const embed = new EmbedBuilder()
-                          .setTitle('Error 🚫')
-                          .setDescription('Failed to fetch XP settings. Please ensure your guild settings are configured.')
-                          .setColor('#FF0000')
-                          .setFooter({ text: 'Leveling System', iconURL: interaction.guild.iconURL() });
-                      return interaction.reply({ embeds: [embed] });
-                  }
+    modal.addComponents(titleRow, descriptionRow, colorRow);
 
-                  const baseXp = row.base_xp || 100;
-                  xpToSet = Math.pow(level, 2) * baseXp;
-
-                  // Update the user's XP
-                  setUserXp(user.id, xpToSet);
-              }
-          );
-      } else {
-          if (xp === null) {
-              const embed = new EmbedBuilder()
-                  .setTitle('Invalid Input 🚫')
-                  .setDescription('You must provide either XP or a level to set.')
-                  .setColor('#FF0000')
-                  .setFooter({ text: 'Leveling System', iconURL: interaction.guild.iconURL() });
-              return interaction.reply({ embeds: [embed], ephemeral: true });
-          }
-
-          setUserXp(user.id, xpToSet);
-      }
-
-      function setUserXp(userId, xpAmount) {
-          db.run(
-              `INSERT INTO user_xp (user_id, xp) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET xp = excluded.xp`,
-              [userId, xpAmount],
-              (err) => {
-                  if (err) {
-                      console.error(`Error setting XP for user ${userId}:`, err);
-                      const embed = new EmbedBuilder()
-                          .setTitle('Error 🚫')
-                          .setDescription('Failed to set XP. Please try again later.')
-                          .setColor('#FF0000')
-                          .setFooter({ text: 'Leveling System', iconURL: interaction.guild.iconURL() });
-                      interaction.reply({ embeds: [embed] });
-                      return;
-                  }
-
-                  const embed = new EmbedBuilder()
-                      .setTitle('XP Set Successfully ✅')
-                      .setDescription(`Set **${user.username}**'s XP to **${xpAmount.toFixed(2)}**.`)
-                      .setColor('#00FF00')
-                      .setFooter({ text: 'Leveling System', iconURL: interaction.guild.iconURL() });
-                  interaction.reply({ embeds: [embed] });
-              }
-          );
-      }
-  }
+    await interaction.showModal(modal);
 });
 
+// Handle modal submission
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isModalSubmit() || interaction.customId !== 'embedModal') return;
 
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return; // Ignore messages from bots
+    const embedTitle = interaction.fields.getTextInputValue('embedTitle');
+    const embedDescription = interaction.fields.getTextInputValue('embedDescription');
+    const embedColor = interaction.fields.getTextInputValue('embedColor') || '#00FF00';
 
-  const userId = message.author.id;
-  const guildId = message.guild.id;
+    const embed = new EmbedBuilder()
+        .setTitle(embedTitle)
+        .setDescription(embedDescription)
+        .setColor(embedColor);
 
-  try {
-      const canEarn = await canEarnXp(userId, guildId); // Check cooldown or other conditions
-      if (!canEarn) {
-          console.log(`User ${message.author.username} is on cooldown for earning XP.`);
-          return;
-      }
+    tempEmbedData[interaction.user.id] = embed;
 
-      const xpGain = Math.random() * (5.0 - 1.0) + 1.0; // Random XP between 1 and 5
-      console.log(`User ${message.author.username} earned ${xpGain.toFixed(2)} XP.`);
+    // Step 2: Present a list of servers to choose from
+    const guildOptions = client.guilds.cache.map((guild) => ({
+        label: guild.name,
+        value: guild.id
+    }));
 
-      const totalXp = await updateUserXp(userId, guildId, xpGain); // Update XP in database
-      updateLastXpTime(userId, guildId); // Update cooldown time
+    const guildSelectMenu = new StringSelectMenuBuilder()
+        .setCustomId('selectGuild')
+        .setPlaceholder('Select servers')
+        .setMinValues(1)
+        .setMaxValues(guildOptions.length)
+        .addOptions(guildOptions);
 
-      console.log(`User ${message.author.username} now has ${totalXp.toFixed(2)} XP.`);
+    const guildRow = new ActionRowBuilder().addComponents(guildSelectMenu);
 
-      const level = calculateLevel(totalXp); // Calculate user level based on total XP
-      console.log(`User ${message.author.username} is now level ${level}.`);
-
-      const member = message.guild.members.cache.get(userId);
-      if (member) {
-          await assignRoles(member, level, message.guild); // Assign roles if applicable
-          console.log(`Roles updated for ${message.author.username} based on level ${level}.`);
-      }
-  } catch (err) {
-      console.error(`Error processing message from ${message.author.username}:`, err);
-  }
+    await interaction.reply({
+        content: 'Select servers to send the embed:',
+        components: [guildRow],
+        flags: 64
+    });
 });
 
+// Store selected channels temporarily
+const tempChannelSelections = {};
 
+// Handle server selection
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectGuild') return;
 
-async function syncXpAcrossServers() {
-  db.all(
-      `SELECT user_id, xp FROM user_xp`,
-      async (err, rows) => {
-          if (err) {
-              console.error(err);
-              return;
-          }
+    const selectedGuildIds = interaction.values;
 
-          for (const { user_id, xp } of rows) {
-              const level = calculateLevel(xp);
-              client.guilds.cache.forEach(async (guild) => {
-                  try {
-                      const member = await guild.members.fetch(user_id);
-                      await assignRoles(member, level, guild);
-                  } catch (error) {
-                      console.error(`Error syncing XP for user ${user_id} in guild ${guild.id}:`, error);
-                  }
-              });
-          }
-      }
-  );
-}
+    // Fetch all text-based channels in the selected servers
+    const channelOptions = selectedGuildIds.flatMap((guildId) => {
+        const guild = client.guilds.cache.get(guildId);
+        return guild.channels.cache
+            .filter((channel) => channel.isTextBased())
+            .map((channel) => ({
+                label: `${guild.name} - #${channel.name}`,
+                value: `${guildId}:${channel.id}`
+            }));
+    });
 
+    if (channelOptions.length === 0) {
+        return interaction.update({
+            content: 'No text channels found in the selected servers.',
+            components: [],
+            flags: 64
+        });
+    }
 
-// Move this definition above the `scheduleJob` call
+    // Split options into chunks of 25 to adhere to Discord's limit
+    const chunkedOptions = [];
+    for (let i = 0; i < channelOptions.length; i += 25) {
+        chunkedOptions.push(channelOptions.slice(i, i + 25));
+    }
+
+    const components = chunkedOptions.map((options, index) =>
+        new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(`selectChannel_${index}`)
+                .setPlaceholder(`Select channels (Page ${index + 1})`)
+                .setMinValues(1)
+                .setMaxValues(options.length)
+                .addOptions(options)
+        )
+    );
+
+    // Add a Submit button
+    components.push(
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('submitEmbed')
+                .setLabel('Submit')
+                .setStyle(ButtonStyle.Success)
+        )
+    );
+    
+
+    tempChannelSelections[interaction.user.id] = []; // Initialize empty selections for the user
+
+    await interaction.update({
+        content: 'Select channels to send the embed (max 25 per menu):',
+        components,
+        flags: 64
+    });
+});
+
+// Handle channel selection
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu() || !interaction.customId.startsWith('selectChannel_')) return;
+
+    const selectedChannels = interaction.values.map((value) => {
+        const [guildId, channelId] = value.split(':');
+        return { guildId, channelId };
+    });
+
+    // Store selected channels
+    if (!tempChannelSelections[interaction.user.id]) {
+        tempChannelSelections[interaction.user.id] = [];
+    }
+    tempChannelSelections[interaction.user.id].push(...selectedChannels);
+
+    await interaction.update({
+        content: 'Channels selected! You can select more or click **Submit** to send the embed.',
+        components: interaction.message.components, // Keep the components for additional selection
+        flags: 64
+    });
+});
+
+// Handle embed submission
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isButton() || interaction.customId !== 'submitEmbed') return;
+
+    const selectedChannels = tempChannelSelections[interaction.user.id];
+    if (!selectedChannels || selectedChannels.length === 0) {
+        return interaction.reply({
+            content: 'No channels selected. Please select at least one channel before submitting.',
+            flags: 64
+        });
+    }
+
+    const embed = tempEmbedData[interaction.user.id];
+    if (!embed) {
+        return interaction.reply({
+            content: 'No embed found to send. Please try again.',
+            flags: 64
+        });
+    }
+
+    // Send embed to all selected channels
+    for (const { guildId, channelId } of selectedChannels) {
+        const guild = client.guilds.cache.get(guildId);
+        const channel = guild?.channels.cache.get(channelId);
+
+        if (channel) {
+            await channel.send({ embeds: [embed] }).catch(console.error);
+        }
+    }
+
+    delete tempEmbedData[interaction.user.id];
+    delete tempChannelSelections[interaction.user.id];
+
+    await interaction.update({
+        content: 'Embed sent successfully to the selected channels!',
+        components: [], // Remove components after submission
+        flags: 64
+    });
+});
+
+// Bot Ready
 client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}!`);
-  try {
-      scheduleJob('*/30 * * * *', syncXpAcrossServers);
-      console.log('Scheduled XP sync across servers.');
-  } catch (error) {
-      console.error('Error during bot initialization:', error);
-  }
+    console.log(`Logged in as ${client.user.tag}`);
 });
 
-client.login(TOKEN)
+// Start Bot
+client.login(process.env.TOKEN);
