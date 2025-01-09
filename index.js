@@ -1,19 +1,5 @@
 const {
-    Client,
-    GatewayIntentBits,
-    REST,
-    Routes,
-    SlashCommandBuilder,
-    EmbedBuilder,
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
-    ActionRowBuilder,
-    StringSelectMenuBuilder,
-    ButtonBuilder,
-    ButtonStyle
-} = require('discord.js');
-require('dotenv').config();
+    Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,} = require('discord.js');require('dotenv').config();
 
 const client = new Client({
     intents: [
@@ -23,10 +9,7 @@ const client = new Client({
     ]
 });
 
-const tempEmbedData = {};
-
 const Database = require('better-sqlite3');
-require('dotenv').config();
 
 // Initialize Database
 const db = new Database('leveling.db', { verbose: console.log });
@@ -67,7 +50,7 @@ function ensureGuildSettings() {
         ON CONFLICT(guild_id) DO NOTHING
     `).run();
 }
-
+// Calculate the level based on XP
 function calculateLevel(xp, baseXp, multiplier) {
     let level = 1;
     let xpForCurrentLevel = baseXp; // Start with base XP for level 1
@@ -94,7 +77,7 @@ function calculateTotalXpForLevel(level, baseXp, multiplier) {
 
 const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 
-// Register Commands
+// Commands
 const commands = [
     new SlashCommandBuilder()
         .setName('setbasexp')
@@ -143,18 +126,17 @@ const commands = [
                 .setDescription('The JSON file to import user data from.')
                 .setRequired(true)),
                 new SlashCommandBuilder()
-    .setName('profile')
-    .setDescription('View your profile or another user\'s profile.')
-    .addUserOption(option =>
-        option.setName('user')
+            .setName('profile')
+            .setDescription('View your profile or another user\'s profile.')
+            .addUserOption(option =>
+                option.setName('user')
             .setDescription('The user whose profile you want to view.')
             .setRequired(false)),
             new SlashCommandBuilder()
-        .setName('sendembed')
-        .setDescription('Create and send an embed to multiple servers and channels.')
-
+        .setName('createembed')
+        .setDescription('Start creating an embed message.')
 ];
-
+// Register Commands
 (async () => {
     try {
         console.log('Registering commands...');
@@ -167,7 +149,6 @@ const commands = [
         console.error('Error registering commands:', error);
     }
 })();
-
 // Function to generate progress bar
 function generateProgressBar(currentXp, xpForNextLevel, barLength = 20) {
     const progress = Math.max(0, Math.min(currentXp / xpForNextLevel, 1)); // Ensure progress is between 0 and 1
@@ -176,7 +157,7 @@ function generateProgressBar(currentXp, xpForNextLevel, barLength = 20) {
 
     return '█'.repeat(filledLength) + '░'.repeat(emptyLength); // Create the progress bar
 }
-
+// Command Handling
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isCommand()) return;
 
@@ -449,6 +430,247 @@ client.on('interactionCreate', async (interaction) => {
     } 
 });
 
+// Temporary storage for embed data
+const tempEmbedData = {};
+
+// Slash Command: `/createembed`
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isCommand() || interaction.commandName !== 'createembed') return;
+
+    // Step 1: Display Modal for Title, Description, and Footer
+    const modal = new ModalBuilder()
+        .setCustomId('embedModal')
+        .setTitle('Create an Embed');
+
+    const titleInput = new TextInputBuilder()
+        .setCustomId('embedTitle')
+        .setLabel('Embed Title')
+        .setPlaceholder('Enter the title of the embed')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+    const descriptionInput = new TextInputBuilder()
+        .setCustomId('embedDescription')
+        .setLabel('Embed Description')
+        .setPlaceholder('Enter the description of the embed')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+    const footerInput = new TextInputBuilder()
+        .setCustomId('embedFooter')
+        .setLabel('Embed Footer (optional)')
+        .setPlaceholder('Enter footer text or leave blank')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(titleInput),
+        new ActionRowBuilder().addComponents(descriptionInput),
+        new ActionRowBuilder().addComponents(footerInput)
+    );
+
+    await interaction.showModal(modal);
+});
+
+// Step 2: Handle Modal Submission
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isModalSubmit() || interaction.customId !== 'embedModal') return;
+
+    const title = interaction.fields.getTextInputValue('embedTitle').trim();
+    const description = interaction.fields.getTextInputValue('embedDescription').trim();
+    const footer = interaction.fields.getTextInputValue('embedFooter')?.trim();
+
+    // Validate title and description
+    if (!title || !description) {
+        return interaction.reply({
+            content: 'Both Title and Description are required. Please try again.',
+            flags: 64,
+        });
+    }
+
+    // Store data in tempEmbedData
+    tempEmbedData[interaction.user.id] = { title, description, footer };
+
+    // Proceed to color selection
+    const colorOptions = [
+        { label: 'Pink', value: '#eb0062' },
+        { label: 'Red', value: '#ff0000' },
+        { label: 'Dark Red', value: '#7c1e1e' },
+        { label: 'Orange', value: '#ff4800' },
+        { label: 'Yellow', value: '#ffe500' },
+        { label: 'Green', value: '#1aff00' },
+        { label: 'Forest Green', value: '#147839' },
+        { label: 'Light Blue', value: '#00bdff' },
+        { label: 'Dark Blue', value: '#356feb' },
+        { label: 'Purple', value: '#76009a' },
+    ];
+
+    const colorMenu = new StringSelectMenuBuilder()
+        .setCustomId('selectColor')
+        .setPlaceholder('Choose a color for your embed')
+        .addOptions(colorOptions);
+
+    const colorRow = new ActionRowBuilder().addComponents(colorMenu);
+
+    await interaction.reply({
+        content: 'Select a color for your embed:',
+        components: [colorRow],
+        flags: 64,
+    });
+});
+
+// Step 3: Handle Color Selection
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectColor') return;
+
+    const selectedColor = interaction.values[0]; // Selected hex color value
+    const embedData = tempEmbedData[interaction.user.id];
+
+    if (!embedData) {
+        return interaction.update({
+            content: 'No embed data found. Please restart the command.',
+            components: [],
+            flags: 64,
+        });
+    }
+
+    // Add color to embed data
+    embedData.color = selectedColor;
+
+    // Build the embed preview
+    const embed = new EmbedBuilder()
+        .setTitle(embedData.title)
+        .setDescription(embedData.description)
+        .setColor(embedData.color);
+
+    if (embedData.footer) {
+        embed.setFooter({ text: embedData.footer });
+    }
+
+    // Prompt user to search for channels
+    const modal = new ModalBuilder()
+        .setCustomId('channelSearchModal')
+        .setTitle('Search for Channels');
+
+    const channelSearchInput = new TextInputBuilder()
+        .setCustomId('channelSearch')
+        .setLabel('Enter channel name or keyword')
+        .setPlaceholder('e.g., general, updates')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+    const actionRow = new ActionRowBuilder().addComponents(channelSearchInput);
+    modal.addComponents(actionRow);
+
+    await interaction.showModal(modal);
+});
+
+// Step 4: Handle Channel Search and Display Results
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isModalSubmit() || interaction.customId !== 'channelSearchModal') return;
+
+    const searchQuery = interaction.fields.getTextInputValue('channelSearch').trim().toLowerCase();
+    const searchTerms = searchQuery.split(',').map((term) => term.trim()); // Split by comma and trim each term
+
+    // Safely collect channels
+    const matchingChannels = [];
+    client.guilds.cache.forEach((guild) => {
+        if (!guild.channels || !guild.channels.cache) return; // Ensure channels exist
+        const textChannels = guild.channels.cache.filter((channel) =>
+            channel.isTextBased() &&
+            searchTerms.some((term) => channel.name.toLowerCase().includes(term)) // Match any term
+        );
+        textChannels.forEach((channel) => {
+            matchingChannels.push({
+                label: `${guild.name} - #${channel.name}`,
+                value: `${guild.id}:${channel.id}`,
+            });
+        });
+    });
+
+    if (matchingChannels.length === 0) {
+        return interaction.reply({
+            content: `No matching channels found for "${searchQuery}". Please try again.`,
+            flags: 64,
+        });
+    }
+
+    // Limit to 25 options for the dropdown
+    const options = matchingChannels.slice(0, 25);
+
+    const channelMenu = new StringSelectMenuBuilder()
+        .setCustomId('selectChannels')
+        .setPlaceholder('Select channels to send the embed')
+        .setMinValues(1) // Minimum selection
+        .setMaxValues(options.length) // Allow selecting all available options
+        .addOptions(options);
+
+    const channelRow = new ActionRowBuilder().addComponents(channelMenu);
+
+    await interaction.reply({
+        content: 'Select one or more channels from the list:',
+        components: [channelRow],
+        flags: 64,
+    });
+});
+
+
+// Step 5: Handle Multi-Channel Embed Sending
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectChannels') return;
+
+    const selectedChannelIds = interaction.values; // Array of selected channel IDs
+    const embedData = tempEmbedData[interaction.user.id];
+
+    if (!embedData || selectedChannelIds.length === 0) {
+        return interaction.reply({
+            content: 'No embed data or channels selected. Please restart the command.',
+            flags: 64,
+        });
+    }
+
+    // Build the final embed
+    const embed = new EmbedBuilder()
+        .setTitle(embedData.title)
+        .setDescription(embedData.description)
+        .setColor(embedData.color);
+
+    if (embedData.footer) {
+        embed.setFooter({ text: embedData.footer });
+    }
+
+    // Send the embed to all selected channels
+    let successfulSends = 0;
+    let failedSends = 0;
+
+    for (const value of selectedChannelIds) {
+        const [guildId, channelId] = value.split(':');
+        const guild = client.guilds.cache.get(guildId);
+        const channel = guild?.channels.cache.get(channelId);
+
+        if (channel && channel.isTextBased()) {
+            try {
+                await channel.send({ embeds: [embed] });
+                successfulSends++;
+            } catch (error) {
+                console.error(`Failed to send embed to ${guild.name} #${channel.name}:`, error);
+                failedSends++;
+            }
+        } else {
+            failedSends++;
+        }
+    }
+
+    delete tempEmbedData[interaction.user.id]; // Clean up temporary data
+
+    // Respond to the user with a summary of the operation
+    await interaction.update({
+        content: `Embed sent successfully to **${successfulSends}** channels. Failed to send to **${failedSends}** channels.`,
+        embeds: [],
+        components: [],
+    });
+});
+
 // In-memory cooldown map
 const xpCooldowns = new Map();
 
@@ -548,213 +770,9 @@ if (member) {
 
 });
 
-// Embed creation command
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isCommand() || interaction.commandName !== 'sendembed') return;
-
-    // Step 1: Show a modal to gather embed details
-    const modal = new ModalBuilder()
-        .setCustomId('embedModal')
-        .setTitle('Create an Embed');
-
-    const titleInput = new TextInputBuilder()
-        .setCustomId('embedTitle')
-        .setLabel('Embed Title')
-        .setPlaceholder('Enter the title of the embed')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-    const descriptionInput = new TextInputBuilder()
-        .setCustomId('embedDescription')
-        .setLabel('Embed Description')
-        .setPlaceholder('Enter the description of the embed')
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true);
-
-    const colorInput = new TextInputBuilder()
-        .setCustomId('embedColor')
-        .setLabel('Embed Color')
-        .setPlaceholder('Enter a hex color code (e.g., #00FF00)')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-
-    const titleRow = new ActionRowBuilder().addComponents(titleInput);
-    const descriptionRow = new ActionRowBuilder().addComponents(descriptionInput);
-    const colorRow = new ActionRowBuilder().addComponents(colorInput);
-
-    modal.addComponents(titleRow, descriptionRow, colorRow);
-
-    await interaction.showModal(modal);
-});
-
-// Handle modal submission
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isModalSubmit() || interaction.customId !== 'embedModal') return;
-
-    const embedTitle = interaction.fields.getTextInputValue('embedTitle');
-    const embedDescription = interaction.fields.getTextInputValue('embedDescription');
-    const embedColor = interaction.fields.getTextInputValue('embedColor') || '#00FF00';
-
-    const embed = new EmbedBuilder()
-        .setTitle(embedTitle)
-        .setDescription(embedDescription)
-        .setColor(embedColor);
-
-    tempEmbedData[interaction.user.id] = embed;
-
-    // Step 2: Present a list of servers to choose from
-    const guildOptions = client.guilds.cache.map((guild) => ({
-        label: guild.name,
-        value: guild.id
-    }));
-
-    const guildSelectMenu = new StringSelectMenuBuilder()
-        .setCustomId('selectGuild')
-        .setPlaceholder('Select servers')
-        .setMinValues(1)
-        .setMaxValues(guildOptions.length)
-        .addOptions(guildOptions);
-
-    const guildRow = new ActionRowBuilder().addComponents(guildSelectMenu);
-
-    await interaction.reply({
-        content: 'Select servers to send the embed:',
-        components: [guildRow],
-        flags: 64
-    });
-});
-
-// Store selected channels temporarily
-const tempChannelSelections = {};
-
-// Handle server selection
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectGuild') return;
-
-    const selectedGuildIds = interaction.values;
-
-    // Fetch all text-based channels in the selected servers
-    const channelOptions = selectedGuildIds.flatMap((guildId) => {
-        const guild = client.guilds.cache.get(guildId);
-        return guild.channels.cache
-            .filter((channel) => channel.isTextBased())
-            .map((channel) => ({
-                label: `${guild.name} - #${channel.name}`,
-                value: `${guildId}:${channel.id}`
-            }));
-    });
-
-    if (channelOptions.length === 0) {
-        return interaction.update({
-            content: 'No text channels found in the selected servers.',
-            components: [],
-            flags: 64
-        });
-    }
-
-    // Split options into chunks of 25 to adhere to Discord's limit
-    const chunkedOptions = [];
-    for (let i = 0; i < channelOptions.length; i += 25) {
-        chunkedOptions.push(channelOptions.slice(i, i + 25));
-    }
-
-    const components = chunkedOptions.map((options, index) =>
-        new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder()
-                .setCustomId(`selectChannel_${index}`)
-                .setPlaceholder(`Select channels (Page ${index + 1})`)
-                .setMinValues(1)
-                .setMaxValues(options.length)
-                .addOptions(options)
-        )
-    );
-
-    // Add a Submit button
-    components.push(
-        new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('submitEmbed')
-                .setLabel('Submit')
-                .setStyle(ButtonStyle.Success)
-        )
-    );
-    
-
-    tempChannelSelections[interaction.user.id] = []; // Initialize empty selections for the user
-
-    await interaction.update({
-        content: 'Select channels to send the embed (max 25 per menu):',
-        components,
-        flags: 64
-    });
-});
-
-// Handle channel selection
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isStringSelectMenu() || !interaction.customId.startsWith('selectChannel_')) return;
-
-    const selectedChannels = interaction.values.map((value) => {
-        const [guildId, channelId] = value.split(':');
-        return { guildId, channelId };
-    });
-
-    // Store selected channels
-    if (!tempChannelSelections[interaction.user.id]) {
-        tempChannelSelections[interaction.user.id] = [];
-    }
-    tempChannelSelections[interaction.user.id].push(...selectedChannels);
-
-    await interaction.update({
-        content: 'Channels selected! You can select more or click **Submit** to send the embed.',
-        components: interaction.message.components, // Keep the components for additional selection
-        flags: 64
-    });
-});
-
-// Handle embed submission
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton() || interaction.customId !== 'submitEmbed') return;
-
-    const selectedChannels = tempChannelSelections[interaction.user.id];
-    if (!selectedChannels || selectedChannels.length === 0) {
-        return interaction.reply({
-            content: 'No channels selected. Please select at least one channel before submitting.',
-            flags: 64
-        });
-    }
-
-    const embed = tempEmbedData[interaction.user.id];
-    if (!embed) {
-        return interaction.reply({
-            content: 'No embed found to send. Please try again.',
-            flags: 64
-        });
-    }
-
-    // Send embed to all selected channels
-    for (const { guildId, channelId } of selectedChannels) {
-        const guild = client.guilds.cache.get(guildId);
-        const channel = guild?.channels.cache.get(channelId);
-
-        if (channel) {
-            await channel.send({ embeds: [embed] }).catch(console.error);
-        }
-    }
-
-    delete tempEmbedData[interaction.user.id];
-    delete tempChannelSelections[interaction.user.id];
-
-    await interaction.update({
-        content: 'Embed sent successfully to the selected channels!',
-        components: [], // Remove components after submission
-        flags: 64
-    });
-});
-
 // Bot Ready
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
-
 // Start Bot
 client.login(process.env.TOKEN);

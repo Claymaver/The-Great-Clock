@@ -1,6 +1,6 @@
 @echo off
 REM Navigate to the bot's directory
-cd /d "G:\Coding\The Great Clock"
+cd /d "G:\Coding\The-Great-Clock"
 
 REM Check if .env exists (optional step to confirm environment setup)
 if not exist .env (
