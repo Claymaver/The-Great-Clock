@@ -80,21 +80,21 @@ const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 // Commands
 const commands = [
     new SlashCommandBuilder()
-        .setName('setbasexp')
+        .setName('tgc-setbasexp')
         .setDescription('Set the base XP value for leveling.')
         .addIntegerOption(option =>
             option.setName('value')
                 .setDescription('The new base XP value.')
                 .setRequired(true)),
     new SlashCommandBuilder()
-        .setName('setmultiplier')
+        .setName('tgc-setmultiplier')
         .setDescription('Set the XP multiplier for leveling.')
         .addNumberOption(option =>
             option.setName('value')
                 .setDescription('The multiplier (defualt 1.11.')
                 .setRequired(true)),
     new SlashCommandBuilder()
-        .setName('setlevelrole')
+        .setName('tgc-setlevelrole')
         .setDescription('Set a role to be applied when a user reaches a specific level.')
         .addIntegerOption(option =>
             option.setName('level')
@@ -105,7 +105,7 @@ const commands = [
                 .setDescription('The role to assign.')
                 .setRequired(true)),
                 new SlashCommandBuilder()
-                .setName('setxp')
+                .setName('tgc-setxp')
                 .setDescription('Set a user\'s global XP or level manually.')
                 .addUserOption(option =>
                     option.setName('user')
@@ -119,21 +119,21 @@ const commands = [
                         .setDescription('The level to set (overrides XP).')),
             
     new SlashCommandBuilder()
-        .setName('importuserdata')
+        .setName('tgc-importuserdata')
         .setDescription('Import user data from a JSON file to update XP.')
         .addAttachmentOption(option =>
             option.setName('file')
                 .setDescription('The JSON file to import user data from.')
                 .setRequired(true)),
                 new SlashCommandBuilder()
-            .setName('profile')
+            .setName('tgc-profile')
             .setDescription('View your profile or another user\'s profile.')
             .addUserOption(option =>
                 option.setName('user')
             .setDescription('The user whose profile you want to view.')
             .setRequired(false)),
             new SlashCommandBuilder()
-        .setName('createembed')
+        .setName('tgc-createembed')
         .setDescription('Start creating an embed message.')
 ];
 // Register Commands
@@ -164,7 +164,7 @@ client.on('interactionCreate', async (interaction) => {
     const { commandName } = interaction;
     const guildId = interaction.guild?.id;
 
-    if (commandName === 'setbasexp') {
+    if (commandName === 'tgc-setbasexp') {
         const baseXp = interaction.options.getInteger('value');
         ensureGuildSettings(guildId);
 
@@ -185,7 +185,7 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    if (commandName === 'setmultiplier') {
+    if (commandName === 'tgc-setmultiplier') {
         const multiplier = interaction.options.getNumber('value');
         ensureGuildSettings(guildId);
 
@@ -206,7 +206,7 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    if (commandName === 'setxp') {
+    if (commandName === 'tgc-setxp') {
         const user = interaction.options.getUser('user');
         const xp = interaction.options.getInteger('xp');
         const level = interaction.options.getInteger('level');
@@ -269,7 +269,7 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    if (commandName === 'setlevelrole') {
+    if (commandName === 'tgc-setlevelrole') {
         const level = interaction.options.getInteger('level');
         const role = interaction.options.getRole('role');
 
@@ -294,7 +294,7 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    if (commandName === 'importuserdata') {
+    if (commandName === 'tgc-importuserdata') {
         const fileAttachment = interaction.options.getAttachment('file');
     
         if (!fileAttachment || !fileAttachment.name.endsWith('.json')) {
@@ -358,7 +358,7 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
     
-    if (commandName === 'profile') {
+    if (commandName === 'tgc-profile') {
         const user = interaction.options.getUser('user') || interaction.user;
     
         try {
@@ -433,9 +433,9 @@ client.on('interactionCreate', async (interaction) => {
 // Temporary storage for embed data
 const tempEmbedData = {};
 
-// Slash Command: `/createembed`
+// Slash Command: `/tgc-createembed`
 client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isCommand() || interaction.commandName !== 'createembed') return;
+    if (!interaction.isCommand() || interaction.commandName !== 'tgc-createembed') return;
 
     // Step 1: Display Modal for Title, Description, and Footer
     const modal = new ModalBuilder()
