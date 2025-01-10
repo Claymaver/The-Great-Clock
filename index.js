@@ -1,18 +1,19 @@
 const {
     Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,} = require('discord.js');require('dotenv').config();
 
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.GuildMessageReactions
-    ]
-});
+    const client = new Client({
+        intents: [
+            GatewayIntentBits.Guilds,
+            GatewayIntentBits.GuildMembers,
+            GatewayIntentBits.GuildMessages,
+        ],
+    });
+
 
 const Database = require('better-sqlite3');
 
 // Initialize Database
-const db = new Database('leveling.db', { verbose: console.log });
+const db = new Database('leveling.db', { verbose: console.log }); 
 db.exec(`
     CREATE TABLE IF NOT EXISTS user_xp (
         user_id TEXT PRIMARY KEY,
@@ -31,8 +32,13 @@ db.exec(`
         base_xp INTEGER DEFAULT 300,
         multiplier REAL DEFAULT 1.11
     );
-
+    CREATE TABLE IF NOT EXISTS global_bans (
+        user_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL DEFAULT 'No reason provided',
+        expires_at INTEGER -- NULL for permanent bans
+    );
 `);
+
 
 // Ensure schema is updated
 try {
@@ -41,6 +47,8 @@ try {
     console.log("Updating schema: Adding 'multiplier' column to 'guild_settings'.");
     db.exec(`ALTER TABLE guild_settings ADD COLUMN multiplier REAL DEFAULT 1.11`);
 }
+
+const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 
 // Ensure Guild Settings
 function ensureGuildSettings() {
@@ -75,8 +83,39 @@ function calculateTotalXpForLevel(level, baseXp, multiplier) {
     return totalXp;
 }
 
-const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+// Function to apply a global ban across all guilds
+async function applyGlobalBan(client, userId, reason) {
+    const guilds = client.guilds.cache;
 
+    if (!guilds.size) {
+        console.log("No guilds available to ban the user.");
+        return;
+    }
+
+    for (const guild of guilds.values()) {
+        try {
+            const member = await guild.members.fetch(userId).catch(() => null);
+
+            if (member) {
+                await guild.bans.create(userId, { reason });
+                console.log(`User banned in guild: ${guild.name}`);
+            } else {
+                console.log(`User not found in guild: ${guild.name}`);
+            }
+        } catch (error) {
+            console.error(`Error banning user in guild: ${guild.name}`, error);
+        }
+    }
+}
+
+// Function to generate progress bar
+function generateProgressBar(currentXp, xpForNextLevel, barLength = 20) {
+    const progress = Math.max(0, Math.min(currentXp / xpForNextLevel, 1)); // Ensure progress is between 0 and 1
+    const filledLength = Math.floor(progress * barLength);
+    const emptyLength = barLength - filledLength;
+
+    return '█'.repeat(filledLength) + '░'.repeat(emptyLength); // Create the progress bar
+}
 // Commands
 const commands = [
     new SlashCommandBuilder()
@@ -134,7 +173,34 @@ const commands = [
             .setRequired(false)),
             new SlashCommandBuilder()
         .setName('tgc-createembed')
-        .setDescription('Start creating an embed message.')
+        .setDescription('Start creating an embed message.'),
+        new SlashCommandBuilder()
+        .setName('tgc-ban')
+        .setDescription('Globally ban a user.')
+        .addUserOption((option) =>
+            option.setName('user').setDescription('The user to ban').setRequired(true)
+        )
+        .addStringOption((option) =>
+            option.setName('reason').setDescription('Reason for the ban').setRequired(false)
+        )
+        .addIntegerOption((option) =>
+            option.setName('duration').setDescription('Ban duration in hours (optional)')
+        ),
+
+    new SlashCommandBuilder()
+        .setName('tgc-kick')
+        .setDescription('Globally kick a user.')
+        .addUserOption((option) =>
+            option.setName('user').setDescription('The user to kick').setRequired(true)
+        )
+        .addStringOption((option) =>
+            option.setName('reason').setDescription('Reason for the kick').setRequired(false)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('tgc-banlist')
+        .setDescription('View the list of globally banned users.')
+
 ];
 // Register Commands
 (async () => {
@@ -149,14 +215,7 @@ const commands = [
         console.error('Error registering commands:', error);
     }
 })();
-// Function to generate progress bar
-function generateProgressBar(currentXp, xpForNextLevel, barLength = 20) {
-    const progress = Math.max(0, Math.min(currentXp / xpForNextLevel, 1)); // Ensure progress is between 0 and 1
-    const filledLength = Math.floor(progress * barLength);
-    const emptyLength = barLength - filledLength;
 
-    return '█'.repeat(filledLength) + '░'.repeat(emptyLength); // Create the progress bar
-}
 // Command Handling
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isCommand()) return;
@@ -671,6 +730,149 @@ client.on('interactionCreate', async (interaction) => {
     });
 });
 
+// Ban Command
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "tgc-ban") {
+        const target = interaction.options.getUser("user");
+        const reason = interaction.options.getString("reason") || "No reason provided.";
+        const duration = interaction.options.getInteger("duration"); // in days
+
+        if (!target) {
+            return interaction.reply({
+                content: "Please specify a user to ban.",
+                flags: 64,
+            });
+        }
+
+        try {
+            // Calculate expiration time if a duration is specified
+            const expiresAt = duration ? Date.now() + duration * 24 * 60 * 60 * 1000 : null;
+
+            // Store the ban in the database
+            db.prepare(
+                `INSERT OR REPLACE INTO global_bans (user_id, reason, expires_at) VALUES (?, ?, ?)`
+            ).run(target.id, reason, expiresAt);
+
+            // Apply the global ban
+            await applyGlobalBan(client, target.id, reason);
+
+            interaction.reply({
+                content: `${target.tag} has been globally banned.${duration ? ` Ban duration: ${duration} days.` : ""}`,
+            });
+        } catch (error) {
+            console.error("Error banning user:", error);
+            interaction.reply({
+                content: `Error banning ${target.tag}: ${error.message}`,
+                flags: 64,
+            });
+        }
+    }
+});
+
+// Kick Command
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-kick') return;
+
+    const target = interaction.options.getUser('user');
+    const reason = interaction.options.getString('reason') || 'No reason provided';
+
+    if (!target) {
+        return interaction.reply({
+            content: 'You must specify a user to kick.',
+            flags: 64,
+        });
+    }
+
+    try {
+        // Apply the kick to all accessible guilds
+        client.guilds.cache.forEach(async (guild) => {
+            const member = guild.members.cache.get(target.id);
+            if (member) {
+                await member.kick(reason).catch(console.error);
+            }
+        });
+
+        return interaction.reply({
+            content: `${target.tag} has been globally kicked.`,
+            flags: 64,
+        });
+    } catch (error) {
+        console.error('Error kicking user:', error);
+        return interaction.reply({
+            content: 'There was an error trying to kick the user. Please try again later.',
+            flags: 64,
+        });
+    }
+});
+
+// Ban List Command
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-banlist") return;
+
+    try {
+        // Fetch all bans from the database
+        const bans = db.prepare(`SELECT user_id, reason, expires_at FROM global_bans`).all();
+
+        if (bans.length === 0) {
+            return interaction.reply({
+                content: "No users are currently banned.",
+                flags: 64,
+            });
+        }
+
+        // Fetch user details for each banned user
+        const banList = [];
+        for (const ban of bans) {
+            const { user_id, reason, expires_at } = ban;
+
+            try {
+                const user = await client.users.fetch(user_id);
+                const username = user.tag; // Fetch the username and tag (e.g., User#1234)
+                const expiresText = expires_at
+                    ? `Expires: <t:${Math.floor(expires_at / 1000)}:R>` // Discord's relative timestamp
+                    : "Permanent";
+
+                banList.push(`- **${username}** (ID: ${user_id})\n  **Reason:** ${reason}\n  ${expiresText}`);
+            } catch {
+                banList.push(
+                    `- **Unknown User** (ID: ${user_id})\n  **Reason:** ${reason}\n  ${
+                        expires_at ? `Expires: <t:${Math.floor(expires_at / 1000)}:R>` : "Permanent"
+                    }`
+                );
+            }
+        }
+
+        // Split the ban list into chunks if it’s too long
+        const MAX_MESSAGE_LENGTH = 2000; // Discord's max message length
+        const banChunks = [];
+        let currentChunk = "";
+
+        for (const entry of banList) {
+            if (currentChunk.length + entry.length + 2 > MAX_MESSAGE_LENGTH) {
+                banChunks.push(currentChunk);
+                currentChunk = "";
+            }
+            currentChunk += entry + "\n\n";
+        }
+        if (currentChunk) banChunks.push(currentChunk);
+
+        // Send each chunk as a separate message
+        for (const chunk of banChunks) {
+            await interaction.channel.send(chunk);
+        }
+
+        interaction.reply({ content: "Ban list displayed below.", flags: 64 });
+    } catch (error) {
+        console.error("Error fetching ban list:", error);
+        interaction.reply({
+            content: "An error occurred while fetching the ban list.",
+            flags: 64,
+        });
+    }
+});
+
 // In-memory cooldown map
 const xpCooldowns = new Map();
 
@@ -771,8 +973,14 @@ if (member) {
 });
 
 // Bot Ready
-client.once('ready', () => {
-    console.log(`Logged in as ${client.user.tag}`);
+client.on('ready', () => {
+    console.log('Bot is ready!');
+    console.log(`Available Guilds: ${client.guilds.cache.size}`);
+
+    client.guilds.cache.forEach((guild) => {
+        console.log(`Guild: ${guild.name} (ID: ${guild.id})`);
+    });
 });
+
 // Start Bot
 client.login(process.env.TOKEN);
