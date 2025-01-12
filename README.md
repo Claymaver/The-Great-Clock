@@ -79,6 +79,26 @@ The **Great Clock Bot** is a Discord bot designed for XP leveling, role manageme
 
 ---
 
+### Role-Based Command Permissions
+
+- Most commands are now restricted based on roles configured via the `tgc-managecommandroles` command.
+- The **`tgc-profile`** command is **public** and can be used by anyone.
+- Other commands require the user to have a role specified in the `command_roles` table.
+
+---
+
+### How to Use
+
+- To enable role-based command permissions:
+  1. Use `/tgc-managecommandroles action:add role:@RoleName` to add a role that can use restricted commands.
+  2. Repeat for each required role.
+
+- To remove a role from having permissions:
+  - Use `/tgc-managecommandroles action:remove role:@RoleName`.
+
+---
+
+
 ## Installation
 
 ### Prerequisites
