@@ -1,5 +1,5 @@
 const {
-    Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,} = require('discord.js');require('dotenv').config();
+    Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,ButtonBuilder,ButtonStyle} = require('discord.js');require('dotenv').config();
 
     const client = new Client({
         intents: [
@@ -138,6 +138,8 @@ async function applyGlobalBan(client, userId, reason) {
         }
     }
 }
+
+client.setMaxListeners(20);
 
 // Function to generate progress bar
 function generateProgressBar(currentXp, xpForNextLevel, barLength = 20) {
@@ -671,10 +673,11 @@ client.on('interactionCreate', async (interaction) => {
 
     ensureGuildSettings(guildId);
 
-    // Step 1: Display Modal for Title, Description, and Footer
+    // Step 1: Display Modal for Title, Description, Footer, and Image URL
     const modal = new ModalBuilder()
         .setCustomId('embedModal')
         .setTitle('Create an Embed');
+    
     const titleInput = new TextInputBuilder()
         .setCustomId('embedTitle')
         .setLabel('Embed Title')
@@ -696,10 +699,18 @@ client.on('interactionCreate', async (interaction) => {
         .setStyle(TextInputStyle.Short)
         .setRequired(false);
 
+        const imageInput = new TextInputBuilder()
+        .setCustomId('embedImage')
+        .setLabel('Image URL (optional)')
+        .setPlaceholder('Enter a direct link to the image')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+    
     modal.addComponents(
         new ActionRowBuilder().addComponents(titleInput),
         new ActionRowBuilder().addComponents(descriptionInput),
-        new ActionRowBuilder().addComponents(footerInput)
+        new ActionRowBuilder().addComponents(footerInput),
+        new ActionRowBuilder().addComponents(imageInput)
     );
 
     await interaction.showModal(modal);
@@ -712,6 +723,7 @@ client.on('interactionCreate', async (interaction) => {
     const title = interaction.fields.getTextInputValue('embedTitle').trim();
     const description = interaction.fields.getTextInputValue('embedDescription').trim();
     const footer = interaction.fields.getTextInputValue('embedFooter')?.trim();
+    const imageUrl = interaction.fields.getTextInputValue('embedImage')?.trim();
 
     // Validate title and description
     if (!title || !description) {
@@ -722,7 +734,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // Store data in tempEmbedData
-    tempEmbedData[interaction.user.id] = { title, description, footer };
+    tempEmbedData[interaction.user.id] = { title, description, footer, image: imageUrl };
 
     // Proceed to color selection
     const colorOptions = [
@@ -780,7 +792,7 @@ client.on('interactionCreate', async (interaction) => {
         embed.setFooter({ text: embedData.footer });
     }
 
-    // Prompt user to search for channels
+    // Prompt user to search for channels with a modal
     const modal = new ModalBuilder()
         .setCustomId('channelSearchModal')
         .setTitle('Search for Channels');
@@ -795,8 +807,14 @@ client.on('interactionCreate', async (interaction) => {
     const actionRow = new ActionRowBuilder().addComponents(channelSearchInput);
     modal.addComponents(actionRow);
 
-    await interaction.showModal(modal);
+    // Show the next modal
+    await interaction.showModal(modal).catch((error) => {
+        console.error('Error displaying channel search modal:', error);
+    });
 });
+
+
+
 
 // Step 4: Handle Channel Search and Display Results
 client.on('interactionCreate', async (interaction) => {
@@ -805,13 +823,13 @@ client.on('interactionCreate', async (interaction) => {
     const searchQuery = interaction.fields.getTextInputValue('channelSearch').trim().toLowerCase();
     const searchTerms = searchQuery.split(',').map((term) => term.trim()); // Split by comma and trim each term
 
-    // Safely collect channels
+    // Safely collect matching channels
     const matchingChannels = [];
     client.guilds.cache.forEach((guild) => {
         if (!guild.channels || !guild.channels.cache) return; // Ensure channels exist
         const textChannels = guild.channels.cache.filter((channel) =>
             channel.isTextBased() &&
-            searchTerms.some((term) => channel.name.toLowerCase().includes(term)) // Match any term
+            searchTerms.some((term) => channel.name.toLowerCase().includes(term)) // Match any search term
         );
         textChannels.forEach((channel) => {
             matchingChannels.push({
@@ -821,31 +839,41 @@ client.on('interactionCreate', async (interaction) => {
         });
     });
 
+    // If no matching channels are found
     if (matchingChannels.length === 0) {
         return interaction.reply({
-            content: `No matching channels found for "${searchQuery}". Please try again.`,
+            content: `No matching channels found for "${searchQuery}". Please try again with different keywords.`,
             flags: 64,
         });
     }
 
-    // Limit to 25 options for the dropdown
+    // Limit to the first 25 matching channels due to Discord's dropdown options limit
     const options = matchingChannels.slice(0, 25);
 
     const channelMenu = new StringSelectMenuBuilder()
         .setCustomId('selectChannels')
         .setPlaceholder('Select channels to send the embed')
         .setMinValues(1) // Minimum selection
-        .setMaxValues(options.length) // Allow selecting all available options
+        .setMaxValues(options.length) // Allow selecting all displayed options
         .addOptions(options);
 
     const channelRow = new ActionRowBuilder().addComponents(channelMenu);
 
-    await interaction.reply({
-        content: 'Select one or more channels from the list:',
-        components: [channelRow],
-        flags: 64,
-    });
+    try {
+        await interaction.reply({
+            content: 'Select one or more channels from the list below:',
+            components: [channelRow],
+            flags: 64,
+        });
+    } catch (error) {
+        console.error('Error replying with channel selection menu:', error);
+        await interaction.reply({
+            content: 'An error occurred while displaying the channel selection menu. Please try again.',
+            flags: 64,
+        });
+    }
 });
+
 
 // Step 5: Handle Multi-Channel Embed Sending
 client.on('interactionCreate', async (interaction) => {
@@ -869,6 +897,10 @@ client.on('interactionCreate', async (interaction) => {
 
     if (embedData.footer) {
         embed.setFooter({ text: embedData.footer });
+    }
+
+    if (embedData.image) {
+        embed.setImage(embedData.image); // Add the image to the embed
     }
 
     // Send the embed to all selected channels
@@ -902,6 +934,8 @@ client.on('interactionCreate', async (interaction) => {
         components: [],
     });
 });
+
+
 
 // Ban Command
 client.on('interactionCreate', async (interaction) => {
