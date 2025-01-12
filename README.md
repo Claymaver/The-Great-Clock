@@ -51,7 +51,7 @@ The **Great Clock Bot** is a Discord bot designed for XP leveling, role manageme
      - Selecting multiple servers.
      - Selecting embed color.
      - Selecting multiple channels within each server.
-     - **(Future)** Ability to attach files.
+     - Attach image link to include in the embed.
 
 ---
 
