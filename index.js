@@ -37,7 +37,34 @@ db.exec(`
         reason TEXT NOT NULL DEFAULT 'No reason provided',
         expires_at INTEGER -- NULL for permanent bans
     );
+    CREATE TABLE IF NOT EXISTS command_roles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        command_name TEXT NOT NULL,
+        role_id TEXT NOT NULL
+    );
 `);
+
+function checkCommandPermission(interaction) {
+    if (!interaction.guild) return false;
+
+    const guildId = interaction.guild.id;
+    const memberRoles = interaction.member.roles.cache.map((role) => role.id);
+
+    // Fetch allowed roles for the guild
+    const allowedRoles = db.prepare(`
+        SELECT role_id FROM command_roles WHERE guild_id = ?
+    `).all(guildId);
+
+    if (allowedRoles.length === 0) {
+        // If no roles are set for the guild, assume all commands are restricted
+        return false;
+    }
+
+    // Check if any of the member's roles match the allowed roles
+    const allowedRoleIds = allowedRoles.map((row) => row.role_id);
+    return memberRoles.some((roleId) => allowedRoleIds.includes(roleId));
+}
 
 
 // Ensure schema is updated
@@ -71,6 +98,10 @@ function calculateLevel(xp, baseXp, multiplier) {
 
     return level;
 }
+
+// Register the command with the Discord API
+client.application?.commands.create(manageCommandRolesCommand.toJSON());
+
 
 // Calculate XP required for a specific level
 function calculateTotalXpForLevel(level, baseXp, multiplier) {
@@ -156,7 +187,6 @@ const commands = [
                 .addIntegerOption(option =>
                     option.setName('level')
                         .setDescription('The level to set (overrides XP).')),
-            
     new SlashCommandBuilder()
         .setName('tgc-importuserdata')
         .setDescription('Import user data from a JSON file to update XP.')
@@ -199,9 +229,29 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('tgc-banlist')
-        .setDescription('View the list of globally banned users.')
-
+        .setDescription('View the list of globally banned users.'),
+   
+        new SlashCommandBuilder()
+    .setName("tgc-managecommandroles")
+    .setDescription("Add or remove roles that can use restricted commands.")
+    .addStringOption((option) =>
+        option
+            .setName("action")
+            .setDescription("Action to perform: add or remove.")
+            .setRequired(true)
+            .addChoices(
+                { name: "Add", value: "add" },
+                { name: "Remove", value: "remove" }
+            )
+    )
+    .addRoleOption((option) =>
+        option
+            .setName("role")
+            .setDescription("Role to add or remove.")
+            .setRequired(true)
+    )
 ];
+
 // Register Commands
 (async () => {
     try {
@@ -221,17 +271,34 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.isCommand()) return;
 
     const { commandName } = interaction;
-    const guildId = interaction.guild?.id;
 
     if (commandName === 'tgc-setbasexp') {
         const baseXp = interaction.options.getInteger('value');
+        const guildId = interaction.guild?.id;
+    
+        // Ensure the command is being used in a guild
+        if (!guildId) {
+            return interaction.reply({
+                content: 'This command can only be used in a server.',
+                flags: 64,
+            });
+        }
+    
+        // Permission Check
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: 'You do not have permission to use this command.',
+                flags: 64,
+            });
+        }
+    
         ensureGuildSettings(guildId);
-
+    
         try {
             db.prepare(`
                 UPDATE guild_settings SET base_xp = ? WHERE guild_id = ?
             `).run(baseXp, guildId);
-
+    
             await interaction.reply({
                 embeds: [new EmbedBuilder()
                     .setTitle('Base XP Updated ✅')
@@ -240,19 +307,41 @@ client.on('interactionCreate', async (interaction) => {
             });
         } catch (error) {
             console.error('Error updating Base XP:', error);
-            await interaction.reply({ content: 'Failed to update Base XP.', flags: 64 });
+            await interaction.reply({
+                content: 'Failed to update Base XP.',
+                flags: 64,
+            });
         }
     }
+    
 
     if (commandName === 'tgc-setmultiplier') {
         const multiplier = interaction.options.getNumber('value');
-        ensureGuildSettings(guildId);
+        const guildId = interaction.guild?.id;
 
+    // Ensure the command is being used in a guild
+    if (!guildId) {
+        return interaction.reply({
+            content: 'This command can only be used in a server.',
+            flags: 64,
+        });
+    }
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64,
+        });
+    }
+
+    ensureGuildSettings(guildId);
+    
         try {
             db.prepare(`
                 UPDATE guild_settings SET multiplier = ? WHERE guild_id = ?
             `).run(multiplier, guildId);
-
+    
             await interaction.reply({
                 embeds: [new EmbedBuilder()
                     .setTitle('Multiplier Updated ✅')
@@ -261,14 +350,37 @@ client.on('interactionCreate', async (interaction) => {
             });
         } catch (error) {
             console.error('Error updating multiplier:', error);
-            await interaction.reply({ content: 'Failed to update multiplier.', flags: 64 });
+            await interaction.reply({
+                content: 'Failed to update multiplier.',
+                flags: 64,
+            });
         }
     }
+    
 
     if (commandName === 'tgc-setxp') {
         const user = interaction.options.getUser('user');
         const xp = interaction.options.getInteger('xp');
         const level = interaction.options.getInteger('level');
+        const guildId = interaction.guild?.id;
+
+        // Ensure the command is being used in a guild
+        if (!guildId) {
+            return interaction.reply({
+                content: 'This command can only be used in a server.',
+                flags: 64,
+            });
+        }
+    
+        // Permission Check
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: 'You do not have permission to use this command.',
+                flags: 64,
+            });
+        }
+    
+        ensureGuildSettings(guildId);
     
         try {
             // Ensure global settings exist
@@ -327,20 +439,38 @@ client.on('interactionCreate', async (interaction) => {
             });
         }
     }
+    
 
     if (commandName === 'tgc-setlevelrole') {
         const level = interaction.options.getInteger('level');
         const role = interaction.options.getRole('role');
+        const guildId = interaction.guild?.id;
 
+        // Ensure the command is being used in a guild
+        if (!guildId) {
+            return interaction.reply({
+                content: 'This command can only be used in a server.',
+                flags: 64,
+            });
+        }
+    
+        // Permission Check
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: 'You do not have permission to use this command.',
+                flags: 64,
+            });
+        }
+    
         try {
             ensureGuildSettings(guildId);
-
+    
             db.prepare(`
                 INSERT INTO level_roles (level, guild_id, role_id)
                 VALUES (?, ?, ?)
                 ON CONFLICT(level, guild_id) DO UPDATE SET role_id = excluded.role_id
             `).run(level, guildId, role.id);
-
+    
             await interaction.reply({
                 embeds: [new EmbedBuilder()
                     .setTitle('Level Role Set ✅')
@@ -349,12 +479,36 @@ client.on('interactionCreate', async (interaction) => {
             });
         } catch (error) {
             console.error('Error setting level role:', error);
-            await interaction.reply({ content: 'Failed to set level role.', flags: 64 });
+            await interaction.reply({
+                content: 'Failed to set level role. Please try again later.',
+                flags: 64,
+            });
         }
     }
+    
 
     if (commandName === 'tgc-importuserdata') {
         const fileAttachment = interaction.options.getAttachment('file');
+        const guildId = interaction.guild?.id;
+
+        // Ensure the command is being used in a guild
+        if (!guildId) {
+            return interaction.reply({
+                content: 'This command can only be used in a server.',
+                flags: 64,
+            });
+        }
+        
+        ensureGuildSettings(guildId);
+
+    
+        // Permission Check
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: 'You do not have permission to use this command.',
+                flags: 64,
+            });
+        }
     
         if (!fileAttachment || !fileAttachment.name.endsWith('.json')) {
             return interaction.reply({
@@ -416,6 +570,7 @@ client.on('interactionCreate', async (interaction) => {
             });
         }
     }
+    
     
     if (commandName === 'tgc-profile') {
         const user = interaction.options.getUser('user') || interaction.user;
@@ -496,11 +651,30 @@ const tempEmbedData = {};
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isCommand() || interaction.commandName !== 'tgc-createembed') return;
 
+    const guildId = interaction.guild?.id;
+
+    // Ensure the command is being used in a guild
+    if (!guildId) {
+        return interaction.reply({
+            content: 'This command can only be used in a server.',
+            flags: 64,
+        });
+    }
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64,
+        });
+    }
+
+    ensureGuildSettings(guildId);
+
     // Step 1: Display Modal for Title, Description, and Footer
     const modal = new ModalBuilder()
         .setCustomId('embedModal')
         .setTitle('Create an Embed');
-
     const titleInput = new TextInputBuilder()
         .setCustomId('embedTitle')
         .setLabel('Embed Title')
@@ -673,7 +847,6 @@ client.on('interactionCreate', async (interaction) => {
     });
 });
 
-
 // Step 5: Handle Multi-Channel Embed Sending
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectChannels') return;
@@ -731,10 +904,29 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // Ban Command
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-ban") return;
 
-    if (interaction.commandName === "tgc-ban") {
+    const guildId = interaction.guild?.id;
+
+    // Ensure the command is being used in a guild
+    if (!guildId) {
+        return interaction.reply({
+            content: 'This command can only be used in a server.',
+            flags: 64,
+        });
+    }
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64,
+        });
+    }
+
+    ensureGuildSettings(guildId);
+
         const target = interaction.options.getUser("user");
         const reason = interaction.options.getString("reason") || "No reason provided.";
         const duration = interaction.options.getInteger("duration"); // in days
@@ -751,11 +943,12 @@ client.on("interactionCreate", async (interaction) => {
             const expiresAt = duration ? Date.now() + duration * 24 * 60 * 60 * 1000 : null;
 
             // Store the ban in the database
-            db.prepare(
-                `INSERT OR REPLACE INTO global_bans (user_id, reason, expires_at) VALUES (?, ?, ?)`
-            ).run(target.id, reason, expiresAt);
+            db.prepare(`
+                INSERT OR REPLACE INTO global_bans (user_id, reason, expires_at)
+                VALUES (?, ?, ?)
+            `).run(target.id, reason, expiresAt);
 
-            // Apply the global ban
+            // Apply the global ban across all servers
             await applyGlobalBan(client, target.id, reason);
 
             interaction.reply({
@@ -769,11 +962,31 @@ client.on("interactionCreate", async (interaction) => {
             });
         }
     }
-});
+);
 
 // Kick Command
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-kick') return;
+
+    const guildId = interaction.guild?.id;
+
+    // Ensure the command is being used in a guild
+    if (!guildId) {
+        return interaction.reply({
+            content: 'This command can only be used in a server.',
+            flags: 64,
+        });
+    }
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64,
+        });
+    }
+
+    ensureGuildSettings(guildId);
 
     const target = interaction.options.getUser('user');
     const reason = interaction.options.getString('reason') || 'No reason provided';
@@ -787,17 +1000,33 @@ client.on('interactionCreate', async (interaction) => {
 
     try {
         // Apply the kick to all accessible guilds
-        client.guilds.cache.forEach(async (guild) => {
+        let successfulKicks = 0;
+        let failedKicks = 0;
+
+        for (const guild of client.guilds.cache.values()) {
             const member = guild.members.cache.get(target.id);
             if (member) {
-                await member.kick(reason).catch(console.error);
+                try {
+                    await member.kick(reason);
+                    successfulKicks++;
+                } catch (err) {
+                    console.error(`Failed to kick ${target.tag} in guild ${guild.name}:`, err);
+                    failedKicks++;
+                }
             }
-        });
+        }
 
-        return interaction.reply({
-            content: `${target.tag} has been globally kicked.`,
-            flags: 64,
-        });
+        if (successfulKicks > 0) {
+            return interaction.reply({
+                content: `${target.tag} has been kicked from ${successfulKicks} server(s).${failedKicks > 0 ? ` Failed to kick from ${failedKicks} server(s).` : ''}`,
+                flags: 64,
+            });
+        } else {
+            return interaction.reply({
+                content: `${target.tag} was not found in any of the servers this bot has access to.`,
+                flags: 64,
+            });
+        }
     } catch (error) {
         console.error('Error kicking user:', error);
         return interaction.reply({
@@ -811,6 +1040,21 @@ client.on('interactionCreate', async (interaction) => {
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-banlist") return;
 
+    if (!interaction.guild) {
+        return interaction.reply({
+            content: 'This command can only be used in a server.',
+            flags: 64,
+        });
+    }
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64,
+        });
+    }
+
     try {
         // Fetch all bans from the database
         const bans = db.prepare(`SELECT user_id, reason, expires_at FROM global_bans`).all();
@@ -822,27 +1066,24 @@ client.on("interactionCreate", async (interaction) => {
             });
         }
 
-        // Fetch user details for each banned user
-        const banList = [];
-        for (const ban of bans) {
-            const { user_id, reason, expires_at } = ban;
-
-            try {
-                const user = await client.users.fetch(user_id);
-                const username = user.tag; // Fetch the username and tag (e.g., User#1234)
-                const expiresText = expires_at
-                    ? `Expires: <t:${Math.floor(expires_at / 1000)}:R>` // Discord's relative timestamp
-                    : "Permanent";
-
-                banList.push(`- **${username}** (ID: ${user_id})\n  **Reason:** ${reason}\n  ${expiresText}`);
-            } catch {
-                banList.push(
-                    `- **Unknown User** (ID: ${user_id})\n  **Reason:** ${reason}\n  ${
-                        expires_at ? `Expires: <t:${Math.floor(expires_at / 1000)}:R>` : "Permanent"
-                    }`
-                );
-            }
-        }
+        // Fetch user details and format the ban list
+        const banList = await Promise.all(
+            bans.map(async ({ user_id, reason, expires_at }) => {
+                try {
+                    const user = await client.users.fetch(user_id);
+                    const username = user.tag; // Fetch the username and tag
+                    const expiresText = expires_at
+                        ? `Expires: <t:${Math.floor(expires_at / 1000)}:R>` // Relative timestamp
+                        : "Permanent";
+                    return `- **${username}** (ID: ${user_id})\n  **Reason:** ${reason}\n  ${expiresText}`;
+                } catch {
+                    const expiresText = expires_at
+                        ? `Expires: <t:${Math.floor(expires_at / 1000)}:R>` // Relative timestamp
+                        : "Permanent";
+                    return `- **Unknown User** (ID: ${user_id})\n  **Reason:** ${reason}\n  ${expiresText}`;
+                }
+            })
+        );
 
         // Split the ban list into chunks if it’s too long
         const MAX_MESSAGE_LENGTH = 2000; // Discord's max message length
@@ -858,18 +1099,94 @@ client.on("interactionCreate", async (interaction) => {
         }
         if (currentChunk) banChunks.push(currentChunk);
 
-        // Send each chunk as a separate message
+        // Reply with the first chunk and follow up with the remaining chunks
+        await interaction.reply({ 
+            content: `Found ${bans.length} ban(s). Displaying below:\n\n${banChunks.shift()}`, 
+            flags: 64 
+        });
         for (const chunk of banChunks) {
-            await interaction.channel.send(chunk);
+            await interaction.followUp({ content: chunk, flags: 64 });
         }
-
-        interaction.reply({ content: "Ban list displayed below.", flags: 64 });
     } catch (error) {
         console.error("Error fetching ban list:", error);
         interaction.reply({
             content: "An error occurred while fetching the ban list.",
             flags: 64,
         });
+    }
+});
+
+// manage command roles handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    const { commandName, options, guild } = interaction;
+
+    if (commandName === "tgc-managecommandroles") {
+        // Check if the user has administrative permissions
+        if (!interaction.member.permissions.has("Administrator")) {
+            return interaction.reply({
+                content: "You do not have permission to use this command. Only administrators can manage command roles.",
+                flags: 64,
+            });
+        }
+
+        const action = options.getString("action"); // "add" or "remove"
+        const role = options.getRole("role");
+
+        if (!role) {
+            return interaction.reply({
+                content: "You must specify a valid role.",
+                flags: 64,
+            });
+        }
+
+        const guildId = guild.id;
+
+        try {
+            if (action === "add") {
+                // Add role to the command_roles table
+                db.prepare(`
+                    INSERT INTO command_roles (guild_id, role_id)
+                    VALUES (?, ?)
+                    ON CONFLICT DO NOTHING
+                `).run(guildId, role.id);
+
+                await interaction.reply({
+                    content: `Role **${role.name}** has been added to the command roles list.`,
+                    flags: 64,
+                });
+            } else if (action === "remove") {
+                // Remove role from the command_roles table
+                const changes = db.prepare(`
+                    DELETE FROM command_roles WHERE guild_id = ? AND role_id = ?
+                `).run(guildId, role.id);
+
+                if (changes.changes === 0) {
+                    return interaction.reply({
+                        content: `Role **${role.name}** was not found in the command roles list.`,
+                        flags: 64,
+                    });
+                }
+
+                await interaction.reply({
+                    content: `Role **${role.name}** has been removed from the command roles list.`,
+                    flags: 64,
+                });
+            } else {
+                // Invalid action
+                await interaction.reply({
+                    content: "Invalid action. Use 'add' or 'remove'.",
+                    flags: 64,
+                });
+            }
+        } catch (error) {
+            console.error("Error managing command roles:", error);
+            await interaction.reply({
+                content: "An error occurred while managing command roles.",
+                flags: 64,
+            });
+        }
     }
 });
 
