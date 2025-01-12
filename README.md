@@ -1,6 +1,6 @@
 # The Great Clock
 
-The **Great Clock Bot** is a Discord bot designed for XP leveling, role management, creating and sending custom embed messages across multiple servers, and global moderation tools (ban/kick). Its features include tracking user activity, assigning roles based on levels, importing user data, creating embeds, and global ban management.
+The **Great Clock Bot** is a Discord bot designed for XP leveling, role management, creating and sending custom embed messages across multiple servers, and global moderation tools (ban/kick).
 
 ---
 
