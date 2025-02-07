@@ -672,7 +672,7 @@ client.on('interactionCreate', async (interaction) => {
 // Temporary storage for embed data
 const tempEmbedData = {};
 
-// Slash Command: `/tgc-createembed`
+// Command createembed
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isCommand() || interaction.commandName !== 'tgc-createembed') return;
 
@@ -680,34 +680,35 @@ client.on('interactionCreate', async (interaction) => {
 
     // Ensure the command is being used in a guild
     if (!guildId) {
-        return interaction.reply({
-            content: 'This command can only be used in a server.',
-            flags: 64
-        });
+        return interaction.reply({ content: 'This command can only be used in a server.', flags: 64 });
     }
 
     // Permission Check
     if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
+        return interaction.reply({ content: 'You do not have permission to use this command.', flags: 64 });
     }
 
     ensureGuildSettings(guildId);
 
-    // Step 1: Display Modal for Title, Description, Footer, and Image URL
+    // Step 1: Display Modal
     const modal = new ModalBuilder()
         .setCustomId('embedModal')
         .setTitle('Create an Embed');
-    
-    const titleInput = new TextInputBuilder()
+
+    const authorInput = new TextInputBuilder()
         .setCustomId('embedTitle')
-        .setLabel('Embed Title')
-        .setPlaceholder('Enter the title of the embed')
+        .setLabel('Title Name')
+        .setPlaceholder('Enter title name')
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
-
+    
+    const authorLinkInput = new TextInputBuilder()
+        .setCustomId('embedTitleLink')
+        .setLabel('Title Link (optional)')
+        .setPlaceholder('Enter URL for title name')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+    
     const descriptionInput = new TextInputBuilder()
         .setCustomId('embedDescription')
         .setLabel('Embed Description')
@@ -715,38 +716,42 @@ client.on('interactionCreate', async (interaction) => {
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true);
 
-    const footerInput = new TextInputBuilder()
-        .setCustomId('embedFooter')
-        .setLabel('Embed Footer (optional)')
-        .setPlaceholder('Enter footer text or leave blank')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-
-        const imageInput = new TextInputBuilder()
+    const imageInput = new TextInputBuilder()
         .setCustomId('embedImage')
-        .setLabel('Image URL (optional)')
+        .setLabel('Image URL (Optional)')
         .setPlaceholder('Enter a direct link to the image')
         .setStyle(TextInputStyle.Short)
         .setRequired(false);
-    
+
+    const thumbnailInput = new TextInputBuilder()
+        .setCustomId('embedThumbnail')
+        .setLabel('Thumbnail URL (optional)')
+        .setPlaceholder('Enter a direct link to the thumbnail image')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+
     modal.addComponents(
-        new ActionRowBuilder().addComponents(titleInput),
+        new ActionRowBuilder().addComponents(authorInput),
+        new ActionRowBuilder().addComponents(authorLinkInput),
         new ActionRowBuilder().addComponents(descriptionInput),
-        new ActionRowBuilder().addComponents(footerInput),
-        new ActionRowBuilder().addComponents(imageInput)
+        new ActionRowBuilder().addComponents(imageInput),
+        new ActionRowBuilder().addComponents(thumbnailInput)
     );
 
     await interaction.showModal(modal);
 });
 
+
 // Step 2: Handle Modal Submission
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isModalSubmit() || interaction.customId !== 'embedModal') return;
 
-    const title = interaction.fields.getTextInputValue('embedTitle').trim();
+    const title = interaction.fields.getTextInputValue('embedTitle')?.trim() || null;
+    const titleLink = interaction.fields.getTextInputValue('embedTitleLink')?.trim() || null;
     const description = interaction.fields.getTextInputValue('embedDescription').trim();
-    const footer = interaction.fields.getTextInputValue('embedFooter')?.trim();
     const imageUrl = interaction.fields.getTextInputValue('embedImage')?.trim();
+    const thumbnailUrl = interaction.fields.getTextInputValue('embedThumbnail')?.trim();
+
 
     // Validate title and description
     if (!title || !description) {
@@ -757,7 +762,13 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // Store data in tempEmbedData
-    tempEmbedData[interaction.user.id] = { title, description, footer, image: imageUrl };
+    tempEmbedData[interaction.user.id] = { 
+        title, 
+        titleLink, 
+        description, 
+        image: imageUrl, 
+        thumbnail: thumbnailUrl 
+    };
 
     // Proceed to color selection
     const colorOptions = [
@@ -787,6 +798,8 @@ client.on('interactionCreate', async (interaction) => {
     });
 });
 
+
+
 // Step 3: Handle Color Selection
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectColor') return;
@@ -796,7 +809,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (!embedData) {
         return interaction.update({
-            content: 'No embed data found. Please restart the command.',
+            content: '❌ No embed data found. Please restart the command.',
             components: [],
             flags: 64
         });
@@ -805,43 +818,40 @@ client.on('interactionCreate', async (interaction) => {
     // Add color to embed data
     embedData.color = selectedColor;
 
-    // Build the embed preview
-    const embed = new EmbedBuilder()
-        .setTitle(embedData.title)
-        .setDescription(embedData.description)
-        .setColor(embedData.color);
+    // Short delay to ensure Discord processes the defer before showing the modal
+    setTimeout(async () => {
+        try {
+            // Prompt user to search for channels with a modal
+            const modal = new ModalBuilder()
+                .setCustomId('channelSearchModal')
+                .setTitle('Search for Channels');
 
-    if (embedData.footer) {
-        embed.setFooter({ text: embedData.footer });
-    }
+            const channelSearchInput = new TextInputBuilder()
+                .setCustomId('channelSearch')
+                .setLabel('Enter channel name or keyword')
+                .setPlaceholder('e.g., general, updates')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true);
 
-    // Prompt user to search for channels with a modal
-    const modal = new ModalBuilder()
-        .setCustomId('channelSearchModal')
-        .setTitle('Search for Channels');
+            const actionRow = new ActionRowBuilder().addComponents(channelSearchInput);
+            modal.addComponents(actionRow);
 
-    const channelSearchInput = new TextInputBuilder()
-        .setCustomId('channelSearch')
-        .setLabel('Enter channel name or keyword')
-        .setPlaceholder('e.g., general, updates')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-    const actionRow = new ActionRowBuilder().addComponents(channelSearchInput);
-    modal.addComponents(actionRow);
-
-    // Show the next modal
-    await interaction.showModal(modal).catch((error) => {
-        console.error('Error displaying channel search modal:', error);
-    });
+            await interaction.showModal(modal);
+        } catch (error) {
+            console.error('Error displaying channel search modal:', error);
+        }
+    }, 500); // Delay to avoid interaction conflict
 });
+
 
 // Step 4: Handle Channel Search and Display Results
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isModalSubmit() || interaction.customId !== 'channelSearchModal') return;
 
+    await interaction.deferReply({ flags: 64 }); // Prevents timeout issues
+
     const searchQuery = interaction.fields.getTextInputValue('channelSearch').trim().toLowerCase();
-    const searchTerms = searchQuery.split(',').map((term) => term.trim()); // Split by comma and trim each term
+    const searchTerms = searchQuery.split(',').map((term) => term.trim()); // Split by comma and trim
 
     // Safely collect matching channels
     const matchingChannels = [];
@@ -861,9 +871,9 @@ client.on('interactionCreate', async (interaction) => {
 
     // If no matching channels are found
     if (matchingChannels.length === 0) {
-        return interaction.reply({
-            content: `No matching channels found for "${searchQuery}". Please try again with different keywords.`,
-            flags: 64
+        return interaction.editReply({
+            content: `❌ No matching channels found for **"${searchQuery}"**. Please try again with different keywords.`,
+            components: []
         });
     }
 
@@ -879,22 +889,14 @@ client.on('interactionCreate', async (interaction) => {
 
     const channelRow = new ActionRowBuilder().addComponents(channelMenu);
 
-    try {
-        await interaction.reply({
-            content: 'Select one or more channels from the list below:',
-            components: [channelRow],
-            flags: 64
-        });
-    } catch (error) {
-        console.error('Error replying with channel selection menu:', error);
-        await interaction.reply({
-            content: 'An error occurred while displaying the channel selection menu. Please try again.',
-            flags: 64
-        });
-    }
+    // Update the interaction with the dropdown menu
+    await interaction.editReply({
+        content: '✅ Select one or more channels from the list below:',
+        components: [channelRow]
+    });
 });
 
-// Step 5: Handle Multi-Channel Embed Sending
+// Step 5: Handle Channel Selection and Send Embed
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectChannels') return;
 
@@ -902,24 +904,42 @@ client.on('interactionCreate', async (interaction) => {
     const embedData = tempEmbedData[interaction.user.id];
 
     if (!embedData || selectedChannelIds.length === 0) {
-        return interaction.reply({
-            content: 'No embed data or channels selected. Please restart the command.',
-            flags: 64
+        return interaction.update({
+            content: '❌ No embed data or channels selected. Please restart the command.',
+            components: [],
         });
     }
 
     // Build the final embed
     const embed = new EmbedBuilder()
-        .setTitle(embedData.title)
         .setDescription(embedData.description)
         .setColor(embedData.color);
 
-    if (embedData.footer) {
-        embed.setFooter({ text: embedData.footer });
+    if (embedData.title) {
+        embed.setTitle(embedData.title);
+        if (embedData.titleLink) {
+            embed.setURL(embedData.titleLink);
+        }
+    }
+
+    if (embedData.thumbnail) {
+        embed.setThumbnail(embedData.thumbnail);
     }
 
     if (embedData.image) {
-        embed.setImage(embedData.image); // Add the image to the embed
+        embed.setImage(embedData.image);
+    }
+
+    // If there is a title link, create a button to match
+    const components = [];
+    if (embedData.titleLink) {
+        const linkButton = new ButtonBuilder()
+            .setLabel('🔗 View More') // Button text
+            .setStyle(ButtonStyle.Link) // Link button style
+            .setURL(embedData.titleLink); // Link URL
+
+        const buttonRow = new ActionRowBuilder().addComponents(linkButton);
+        components.push(buttonRow);
     }
 
     // Send the embed to all selected channels
@@ -931,15 +951,17 @@ client.on('interactionCreate', async (interaction) => {
         const guild = client.guilds.cache.get(guildId);
         const channel = guild?.channels.cache.get(channelId);
 
-        if (channel && channel.isTextBased()) {
-            try {
-                await channel.send({ embeds: [embed] });
-                successfulSends++;
-            } catch (error) {
-                console.error(`Failed to send embed to ${guild.name} #${channel.name}:`, error);
-                failedSends++;
-            }
-        } else {
+        if (!channel || !channel.isTextBased()) {
+            console.error(`Channel not found or not text-based: ${guildId}:${channelId}`);
+            failedSends++;
+            continue;
+        }
+
+        try {
+            await channel.send({ embeds: [embed], components: components.length ? components : undefined });
+            successfulSends++;
+        } catch (error) {
+            console.error(`Failed to send embed to ${guild.name} #${channel.name}:`, error);
             failedSends++;
         }
     }
@@ -948,11 +970,12 @@ client.on('interactionCreate', async (interaction) => {
 
     // Respond to the user with a summary of the operation
     await interaction.update({
-        content: `Embed sent successfully to **${successfulSends}** channels. Failed to send to **${failedSends}** channels.`,
-        embeds: [],
+        content: `✅ **Embed sent successfully to ${successfulSends} channels.**\n❌ **Failed to send to ${failedSends} channels.**`,
         components: [],
     });
 });
+
+
 
 // Ban Command
 client.on('interactionCreate', async (interaction) => {
