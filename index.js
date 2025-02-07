@@ -1,5 +1,5 @@
 const {
-    Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,ButtonBuilder,ButtonStyle} = require('discord.js');require('dotenv').config();
+    Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,ButtonBuilder,ButtonStyle,ChannelType, PermissionsBitField } = require('discord.js');require('dotenv').config();
 
     const client = new Client({
         intents: [
@@ -8,7 +8,6 @@ const {
             GatewayIntentBits.GuildMessages,
         ],
     });
-
 
 const Database = require('better-sqlite3');
 
@@ -28,10 +27,11 @@ db.exec(`
     );
 
     CREATE TABLE IF NOT EXISTS guild_settings (
-        guild_id TEXT PRIMARY KEY,
-        base_xp INTEGER DEFAULT 300,
-        multiplier REAL DEFAULT 1.11
-    );
+    guild_id TEXT PRIMARY KEY,
+    base_xp INTEGER DEFAULT 300,
+    multiplier REAL DEFAULT 1.11,
+    log_channel TEXT DEFAULT NULL
+);
     CREATE TABLE IF NOT EXISTS global_bans (
         user_id TEXT PRIMARY KEY,
         reason TEXT NOT NULL DEFAULT 'No reason provided',
@@ -66,7 +66,6 @@ function checkCommandPermission(interaction) {
     return memberRoles.some((roleId) => allowedRoleIds.includes(roleId));
 }
 
-
 // Ensure schema is updated
 try {
     db.prepare(`SELECT multiplier FROM guild_settings LIMIT 1`).get();
@@ -80,11 +79,13 @@ const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 // Ensure Guild Settings
 function ensureGuildSettings() {
     db.prepare(`
-        INSERT INTO guild_settings (guild_id, base_xp, multiplier)
-        VALUES ('global', 300, 1.11)
+        INSERT INTO guild_settings (guild_id, base_xp, multiplier, log_channel)
+        VALUES ('global', 300, 1.11, NULL)
         ON CONFLICT(guild_id) DO NOTHING
     `).run();
 }
+
+
 // Calculate the level based on XP
 function calculateLevel(xp, baseXp, multiplier) {
     let level = 1;
@@ -101,7 +102,6 @@ function calculateLevel(xp, baseXp, multiplier) {
 
 // Register the command with the Discord API
 client.application?.commands.create(manageCommandRolesCommand.toJSON());
-
 
 // Calculate XP required for a specific level
 function calculateTotalXpForLevel(level, baseXp, multiplier) {
@@ -149,6 +149,7 @@ function generateProgressBar(currentXp, xpForNextLevel, barLength = 20) {
 
     return '█'.repeat(filledLength) + '░'.repeat(emptyLength); // Create the progress bar
 }
+
 // Commands
 const commands = [
     new SlashCommandBuilder()
@@ -232,6 +233,9 @@ const commands = [
     new SlashCommandBuilder()
         .setName('tgc-banlist')
         .setDescription('View the list of globally banned users.'),
+    new SlashCommandBuilder()
+        .setName('tgc-unban')
+        .setDescription('Unban Users.'),
    
         new SlashCommandBuilder()
     .setName("tgc-managecommandroles")
@@ -251,7 +255,20 @@ const commands = [
             .setName("role")
             .setDescription("Role to add or remove.")
             .setRequired(true)
-    )
+    ),
+    new SlashCommandBuilder()
+    .setName('tgc-setlogchannel')
+    .setDescription('Set the log channel for support and report logs.')
+    .addChannelOption(option => 
+        option.setName('channel')
+        .setDescription('Select the log channel')
+        .setRequired(true)),
+    new SlashCommandBuilder()
+    .setName('tgc-closeticket')
+    .setDescription('Closes current ticket.'),
+    new SlashCommandBuilder()
+    .setName('tgc-openticket')
+    .setDescription('Opens a support ticket for help or reporting.'),
 ];
 
 // Register Commands
@@ -282,7 +299,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!guildId) {
             return interaction.reply({
                 content: 'This command can only be used in a server.',
-                flags: 64,
+                flags: 64
             });
         }
     
@@ -290,7 +307,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!checkCommandPermission(interaction)) {
             return interaction.reply({
                 content: 'You do not have permission to use this command.',
-                flags: 64,
+                flags: 64
             });
         }
     
@@ -311,7 +328,7 @@ client.on('interactionCreate', async (interaction) => {
             console.error('Error updating Base XP:', error);
             await interaction.reply({
                 content: 'Failed to update Base XP.',
-                flags: 64,
+                flags: 64
             });
         }
     }
@@ -325,7 +342,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!guildId) {
         return interaction.reply({
             content: 'This command can only be used in a server.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -333,7 +350,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!checkCommandPermission(interaction)) {
         return interaction.reply({
             content: 'You do not have permission to use this command.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -354,7 +371,7 @@ client.on('interactionCreate', async (interaction) => {
             console.error('Error updating multiplier:', error);
             await interaction.reply({
                 content: 'Failed to update multiplier.',
-                flags: 64,
+                flags: 64
             });
         }
     }
@@ -370,7 +387,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!guildId) {
             return interaction.reply({
                 content: 'This command can only be used in a server.',
-                flags: 64,
+                flags: 64
             });
         }
     
@@ -378,7 +395,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!checkCommandPermission(interaction)) {
             return interaction.reply({
                 content: 'You do not have permission to use this command.',
-                flags: 64,
+                flags: 64
             });
         }
     
@@ -437,7 +454,7 @@ client.on('interactionCreate', async (interaction) => {
             // Send error response
             await interaction.reply({
                 content: `Failed to set XP. Error: ${error.message}`,
-                flags: 64,
+                flags: 64
             });
         }
     }
@@ -452,7 +469,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!guildId) {
             return interaction.reply({
                 content: 'This command can only be used in a server.',
-                flags: 64,
+                flags: 64
             });
         }
     
@@ -460,7 +477,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!checkCommandPermission(interaction)) {
             return interaction.reply({
                 content: 'You do not have permission to use this command.',
-                flags: 64,
+                flags: 64
             });
         }
     
@@ -483,7 +500,7 @@ client.on('interactionCreate', async (interaction) => {
             console.error('Error setting level role:', error);
             await interaction.reply({
                 content: 'Failed to set level role. Please try again later.',
-                flags: 64,
+                flags: 64
             });
         }
     }
@@ -497,7 +514,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!guildId) {
             return interaction.reply({
                 content: 'This command can only be used in a server.',
-                flags: 64,
+                flags: 64
             });
         }
         
@@ -508,14 +525,14 @@ client.on('interactionCreate', async (interaction) => {
         if (!checkCommandPermission(interaction)) {
             return interaction.reply({
                 content: 'You do not have permission to use this command.',
-                flags: 64,
+                flags: 64
             });
         }
     
         if (!fileAttachment || !fileAttachment.name.endsWith('.json')) {
             return interaction.reply({
                 content: 'Please upload a valid JSON file.',
-                flags: 64,
+                flags: 64
             });
         }
     
@@ -575,20 +592,26 @@ client.on('interactionCreate', async (interaction) => {
     
     
     if (commandName === 'tgc-profile') {
-        const user = interaction.options.getUser('user') || interaction.user;
+        const targetUser = interaction.options.getUser('user') || interaction.user;
+        const userId = targetUser?.id; // Ensure we get a valid user ID
+    
+        if (!userId) {
+            return interaction.reply({ content: 'Could not find the specified user.', flags: 64 });
+        }
     
         try {
-            // Fetch user XP globally
-            const { xp: totalXp } = db.prepare(`
+            // Fetch user XP from the database
+            const userXpData = db.prepare(`
                 SELECT xp FROM user_xp WHERE user_id = ?
-            `).get(user.id) || { xp: 0 };
+            `).get(userId) || { xp: 0 };
     
             // Fetch global base XP and multiplier
             const { base_xp: baseXp, multiplier } = db.prepare(`
                 SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
             `).get() || { base_xp: 300, multiplier: 1.11 };
     
-            // Handle cases where total XP exceeds the expected range for the current level
+            // Calculate Level
+            let totalXp = userXpData.xp;
             let level = calculateLevel(totalXp, baseXp, multiplier);
             let xpForCurrentLevel = calculateTotalXpForLevel(level, baseXp, multiplier);
             let xpForNextLevel = calculateTotalXpForLevel(level + 1, baseXp, multiplier);
@@ -599,43 +622,43 @@ client.on('interactionCreate', async (interaction) => {
                 xpForNextLevel = calculateTotalXpForLevel(level + 1, baseXp, multiplier);
             }
     
-            // Calculate XP progress
-            const xpProgress = Math.max(0, totalXp - xpForCurrentLevel);
-            const xpRequired = Math.max(1, xpForNextLevel - xpForCurrentLevel); // Prevent divide-by-zero errors
-    
-            // Progress bar logic
+            // Calculate XP Progress
+            const xpProgress = totalXp - xpForCurrentLevel;
+            const xpRequired = xpForNextLevel - xpForCurrentLevel;
             const progressBarLength = 20;
-            const progressRatio = Math.min(1, xpProgress / xpRequired); // Clamp progress ratio to [0, 1]
+            const progressRatio = xpProgress / xpRequired;
             const progressBarFilled = Math.round(progressRatio * progressBarLength);
             const progressBar = '█'.repeat(progressBarFilled) + '░'.repeat(progressBarLength - progressBarFilled);
     
-            // Estimate messages to next level
-            const averageXpPerMessage = 3; // Adjust based on your XP gain range
-            const messagesToNextLevel = Math.max(0, Math.ceil((xpRequired - xpProgress) / averageXpPerMessage));
+            // Estimate Messages to Level Up
+            const averageXpPerMessage = 3; // Adjust as needed
+            const messagesToNextLevel = Math.ceil((xpRequired - xpProgress) / averageXpPerMessage);
     
-            // Debug logs
-            console.log(`User: ${user.username}`);
-            console.log(`Total XP: ${totalXp}`);
-            console.log(`Level: ${level}`);
-            console.log(`XP for Current Level: ${xpForCurrentLevel}`);
-            console.log(`XP for Next Level: ${xpForNextLevel}`);
-            console.log(`XP Progress: ${xpProgress}`);
-            console.log(`Progress Ratio: ${progressRatio}`);
-            console.log(`Progress Bar: ${progressBar}`);
-            console.log(`Messages to Next Level: ${messagesToNextLevel}`);
+            // Fetch User Avatar Properly
+            let avatarURL = targetUser.displayAvatarURL ? targetUser.displayAvatarURL({ dynamic: true }) : null;
+            if (!avatarURL) {
+                try {
+                    const fetchedUser = await client.users.fetch(userId);
+                    avatarURL = fetchedUser.displayAvatarURL({ dynamic: true });
+                } catch (err) {
+                    console.error('Failed to fetch user avatar:', err);
+                    avatarURL = 'https://cdn.discordapp.com/embed/avatars/0.png'; // Default avatar
+                }
+            }
     
-            // Create embed
+            // Build Profile Embed
             const profileEmbed = new EmbedBuilder()
-                .setTitle(`${user.username}'s Profile`)
+                .setTitle(`${targetUser.username}'s Profile`)
                 .setDescription(`Level: **${level}**\nTotal XP: **${totalXp.toFixed(2)}**`)
                 .addFields(
                     { name: 'Progress to Next Level', value: `${progressBar} (${xpProgress.toFixed(2)} / ${xpRequired.toFixed(2)} XP)` },
                     { name: 'Messages to Next Level', value: `${messagesToNextLevel} (approx)` }
                 )
-                .setThumbnail(user.displayAvatarURL({ dynamic: true }))
+                .setThumbnail(avatarURL)
                 .setColor('#00FF00');
     
             await interaction.reply({ embeds: [profileEmbed] });
+    
         } catch (error) {
             console.error('Error generating profile:', error);
             await interaction.reply({
@@ -643,7 +666,7 @@ client.on('interactionCreate', async (interaction) => {
                 flags: 64,
             });
         }
-    } 
+    }
 });
 
 // Temporary storage for embed data
@@ -659,7 +682,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!guildId) {
         return interaction.reply({
             content: 'This command can only be used in a server.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -667,7 +690,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!checkCommandPermission(interaction)) {
         return interaction.reply({
             content: 'You do not have permission to use this command.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -729,7 +752,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!title || !description) {
         return interaction.reply({
             content: 'Both Title and Description are required. Please try again.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -760,7 +783,7 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.reply({
         content: 'Select a color for your embed:',
         components: [colorRow],
-        flags: 64,
+        flags: 64
     });
 });
 
@@ -775,7 +798,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.update({
             content: 'No embed data found. Please restart the command.',
             components: [],
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -813,9 +836,6 @@ client.on('interactionCreate', async (interaction) => {
     });
 });
 
-
-
-
 // Step 4: Handle Channel Search and Display Results
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isModalSubmit() || interaction.customId !== 'channelSearchModal') return;
@@ -843,7 +863,7 @@ client.on('interactionCreate', async (interaction) => {
     if (matchingChannels.length === 0) {
         return interaction.reply({
             content: `No matching channels found for "${searchQuery}". Please try again with different keywords.`,
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -863,17 +883,16 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({
             content: 'Select one or more channels from the list below:',
             components: [channelRow],
-            flags: 64,
+            flags: 64
         });
     } catch (error) {
         console.error('Error replying with channel selection menu:', error);
         await interaction.reply({
             content: 'An error occurred while displaying the channel selection menu. Please try again.',
-            flags: 64,
+            flags: 64
         });
     }
 });
-
 
 // Step 5: Handle Multi-Channel Embed Sending
 client.on('interactionCreate', async (interaction) => {
@@ -885,7 +904,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!embedData || selectedChannelIds.length === 0) {
         return interaction.reply({
             content: 'No embed data or channels selected. Please restart the command.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -935,8 +954,6 @@ client.on('interactionCreate', async (interaction) => {
     });
 });
 
-
-
 // Ban Command
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-ban") return;
@@ -947,7 +964,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!guildId) {
         return interaction.reply({
             content: 'This command can only be used in a server.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -955,48 +972,67 @@ client.on('interactionCreate', async (interaction) => {
     if (!checkCommandPermission(interaction)) {
         return interaction.reply({
             content: 'You do not have permission to use this command.',
-            flags: 64,
+            flags: 64
         });
     }
 
     ensureGuildSettings(guildId);
 
-        const target = interaction.options.getUser("user");
-        const reason = interaction.options.getString("reason") || "No reason provided.";
-        const duration = interaction.options.getInteger("duration"); // in days
+    const target = interaction.options.getUser("user");
+    const reason = interaction.options.getString("reason") || "No reason provided.";
+    const duration = interaction.options.getInteger("duration"); // in days
 
-        if (!target) {
-            return interaction.reply({
-                content: "Please specify a user to ban.",
-                flags: 64,
-            });
-        }
-
-        try {
-            // Calculate expiration time if a duration is specified
-            const expiresAt = duration ? Date.now() + duration * 24 * 60 * 60 * 1000 : null;
-
-            // Store the ban in the database
-            db.prepare(`
-                INSERT OR REPLACE INTO global_bans (user_id, reason, expires_at)
-                VALUES (?, ?, ?)
-            `).run(target.id, reason, expiresAt);
-
-            // Apply the global ban across all servers
-            await applyGlobalBan(client, target.id, reason);
-
-            interaction.reply({
-                content: `${target.tag} has been globally banned.${duration ? ` Ban duration: ${duration} days.` : ""}`,
-            });
-        } catch (error) {
-            console.error("Error banning user:", error);
-            interaction.reply({
-                content: `Error banning ${target.tag}: ${error.message}`,
-                flags: 64,
-            });
-        }
+    if (!target) {
+        return interaction.reply({
+            content: "Please specify a user to ban.",
+            flags: 64
+        });
     }
-);
+
+    try {
+        // Calculate expiration time if a duration is specified
+        const expiresAt = duration ? Date.now() + duration * 24 * 60 * 60 * 1000 : null;
+
+        // Check if the user is already banned in the database
+        const existingBan = db.prepare('SELECT * FROM global_bans WHERE user_id = ?').get(target.id);
+
+        if (existingBan) {
+            return interaction.reply({
+                content: `${target.tag} is already globally banned.`,
+                flags: 64
+            });
+        }
+
+        // Store the ban in the database
+        db.prepare(`
+            INSERT INTO global_bans (user_id, reason, expires_at)
+            VALUES (?, ?, ?)
+        `).run(target.id, reason, expiresAt);
+
+        // Apply the global ban across all servers
+        const results = [];
+        for (const [guildId, guild] of client.guilds.cache) {
+            try {
+                await guild.members.ban(target.id, { reason });
+                results.push(`✅ Banned in **${guild.name}**`);
+            } catch (error) {
+                console.error(`Failed to ban in guild ${guild.name}:`, error);
+                results.push(`❌ Failed to ban in **${guild.name}**`);
+            }
+        }
+
+        // Respond with ban confirmation and affected servers
+        interaction.reply({
+            content: `**${target.tag}** has been globally banned.${duration ? ` Ban duration: ${duration} days.` : ""}\n\n${results.join("\n")}`,
+        });
+    } catch (error) {
+        console.error("Error banning user:", error);
+        interaction.reply({
+            content: `An error occurred while banning ${target.tag}: ${error.message}`,
+            flags: 64
+        });
+    }
+});
 
 // Kick Command
 client.on('interactionCreate', async (interaction) => {
@@ -1008,7 +1044,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!guildId) {
         return interaction.reply({
             content: 'This command can only be used in a server.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -1016,7 +1052,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!checkCommandPermission(interaction)) {
         return interaction.reply({
             content: 'You do not have permission to use this command.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -1028,7 +1064,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!target) {
         return interaction.reply({
             content: 'You must specify a user to kick.',
-            flags: 64,
+            flags: 64
         });
     }
 
@@ -1053,102 +1089,332 @@ client.on('interactionCreate', async (interaction) => {
         if (successfulKicks > 0) {
             return interaction.reply({
                 content: `${target.tag} has been kicked from ${successfulKicks} server(s).${failedKicks > 0 ? ` Failed to kick from ${failedKicks} server(s).` : ''}`,
-                flags: 64,
+                flags: 64
             });
         } else {
             return interaction.reply({
                 content: `${target.tag} was not found in any of the servers this bot has access to.`,
-                flags: 64,
+                flags: 64
             });
         }
     } catch (error) {
         console.error('Error kicking user:', error);
         return interaction.reply({
             content: 'There was an error trying to kick the user. Please try again later.',
-            flags: 64,
+            flags: 64
         });
     }
 });
 
 // Ban List Command
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-banlist") return;
-
-    if (!interaction.guild) {
-        return interaction.reply({
-            content: 'This command can only be used in a server.',
-            flags: 64,
-        });
-    }
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-banlist') return;
 
     // Permission Check
     if (!checkCommandPermission(interaction)) {
         return interaction.reply({
             content: 'You do not have permission to use this command.',
-            flags: 64,
+            flags: 64
         });
     }
 
     try {
-        // Fetch all bans from the database
-        const bans = db.prepare(`SELECT user_id, reason, expires_at FROM global_bans`).all();
+        // Synchronize bans before displaying them
+        await synchronizeBans();
 
-        if (bans.length === 0) {
+        // Fetch bans from the database
+        const bans = db.prepare('SELECT * FROM global_bans').all();
+
+        if (!bans.length) {
             return interaction.reply({
-                content: "No users are currently banned.",
-                flags: 64,
+                content: 'No users are currently banned.',
+                flags: 64
             });
         }
 
-        // Fetch user details and format the ban list
+        // Fetch user details and build the list
         const banList = await Promise.all(
-            bans.map(async ({ user_id, reason, expires_at }) => {
+            bans.map(async (ban) => {
                 try {
-                    const user = await client.users.fetch(user_id);
-                    const username = user.tag; // Fetch the username and tag
-                    const expiresText = expires_at
-                        ? `Expires: <t:${Math.floor(expires_at / 1000)}:R>` // Relative timestamp
-                        : "Permanent";
-                    return `- **${username}** (ID: ${user_id})\n  **Reason:** ${reason}\n  ${expiresText}`;
+                    const user = await client.users.fetch(ban.user_id);
+                    const expiresText = ban.expires_at
+                        ? `Expires: <t:${Math.floor(ban.expires_at / 1000)}:R>` // Discord Relative Timestamp
+                        : 'Permanent Ban';
+
+                    return `**${user.tag}** (ID: ${ban.user_id})\n**Reason:** ${ban.reason}\n${expiresText}`;
                 } catch {
-                    const expiresText = expires_at
-                        ? `Expires: <t:${Math.floor(expires_at / 1000)}:R>` // Relative timestamp
-                        : "Permanent";
-                    return `- **Unknown User** (ID: ${user_id})\n  **Reason:** ${reason}\n  ${expiresText}`;
+                    return `**Unknown User** (ID: ${ban.user_id})\n**Reason:** ${ban.reason}\n${
+                        ban.expires_at ? `Expires: <t:${Math.floor(ban.expires_at / 1000)}:R>` : 'Permanent Ban'
+                    }`;
                 }
             })
         );
 
-        // Split the ban list into chunks if it’s too long
-        const MAX_MESSAGE_LENGTH = 2000; // Discord's max message length
+        // Split message if over 2000 characters
+        const MAX_MESSAGE_LENGTH = 2000;
         const banChunks = [];
-        let currentChunk = "";
+        let currentChunk = '';
 
         for (const entry of banList) {
             if (currentChunk.length + entry.length + 2 > MAX_MESSAGE_LENGTH) {
                 banChunks.push(currentChunk);
-                currentChunk = "";
+                currentChunk = '';
             }
-            currentChunk += entry + "\n\n";
+            currentChunk += entry + '\n\n';
         }
         if (currentChunk) banChunks.push(currentChunk);
 
-        // Reply with the first chunk and follow up with the remaining chunks
-        await interaction.reply({ 
-            content: `Found ${bans.length} ban(s). Displaying below:\n\n${banChunks.shift()}`, 
-            flags: 64 
-        });
+        // Reply with the first message and follow up with the rest
+        await interaction.reply({ content: banChunks.shift(), flags: 64 });
+
         for (const chunk of banChunks) {
             await interaction.followUp({ content: chunk, flags: 64 });
         }
     } catch (error) {
-        console.error("Error fetching ban list:", error);
-        interaction.reply({
-            content: "An error occurred while fetching the ban list.",
-            flags: 64,
+        console.error('Error fetching ban list:', error);
+        return interaction.reply({
+            content: 'An error occurred while fetching the ban list.',
+            flags: 64
         });
     }
 });
+
+// unban Command
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-unban') return;
+
+    try {
+        // Synchronize bans with the database
+        await synchronizeBans();
+
+        // Fetch updated bans from the database
+        const bans = db.prepare('SELECT * FROM global_bans').all();
+
+        if (!bans.length) {
+            return interaction.reply({
+                content: 'There are no users currently banned.',
+                flags: 64
+            });
+        }
+
+        // Split bans into pages of 25
+        const MAX_OPTIONS = 25;
+        const totalPages = Math.ceil(bans.length / MAX_OPTIONS);
+        let currentPage = 0;
+
+        // Function to generate options for the dropdown
+        const generateOptions = (page) => {
+            return bans.slice(page * MAX_OPTIONS, (page + 1) * MAX_OPTIONS).map((ban) => {
+                return {
+                    label: `User ID: ${ban.user_id}`, // Display user ID (Fetch username later)
+                    description: ban.expires_at
+                        ? `Expires: <t:${Math.floor(ban.expires_at / 1000)}:R>`
+                        : 'Permanent Ban',
+                    value: ban.user_id
+                };
+            });
+        };
+
+        // Create the dropdown menu
+        const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId(`selectUnbanUser_${currentPage}`)
+            .setPlaceholder('Select a user to unban')
+            .addOptions(generateOptions(currentPage));
+
+        // Add "Next Page" button if there are multiple pages
+        const components = [new ActionRowBuilder().addComponents(selectMenu)];
+        if (totalPages > 1) {
+            components.push(new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('nextPage')
+                    .setLabel('Next Page ➡️')
+                    .setStyle(ButtonStyle.Primary)
+            ));
+        }
+
+        return interaction.reply({
+            content: `Select a user from the list to unban: (Page **${currentPage + 1}** of **${totalPages}**)`,
+            components,
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('Error fetching unban list:', error);
+        return interaction.reply({
+            content: 'An error occurred while fetching the ban list.',
+            flags: 64
+        });
+    }
+});
+
+// Handle dropdown selection for unban with user confirmation & per-guild results
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu() || !interaction.customId.startsWith('selectUnbanUser')) return;
+
+    const userId = interaction.values[0]; // Selected user ID
+
+    try {
+        // Attempt to fetch the user's details from Discord
+        let user;
+        try {
+            user = await client.users.fetch(userId);
+        } catch (fetchError) {
+            console.warn(`Could not fetch user ${userId}, using ID instead.`);
+        }
+
+        // Remove the user from the database
+        db.prepare('DELETE FROM global_bans WHERE user_id = ?').run(userId);
+
+        // Attempt to unban the user from all guilds
+        let unbanResults = [];
+        for (const [guildId, guild] of client.guilds.cache) {
+            try {
+                await guild.bans.remove(userId, 'Unbanned via dropdown menu');
+                unbanResults.push(`✅ Unbanned from: **${guild.name}**`);
+            } catch (error) {
+                console.error(`Failed to unban user ${userId} in guild ${guild.name}:`, error);
+                unbanResults.push(`❌ Failed to unban from: **${guild.name}**`);
+            }
+        }
+
+        // Get the user's name or fallback to ID
+        const userTag = user ? `${user.tag} (ID: ${user.id})` : `Unknown User (ID: ${userId})`;
+
+        // Send confirmation with user details
+        return interaction.update({
+            content: `**${userTag}** has been unbanned.\n\n${unbanResults.join('\n')}`,
+            components: [],
+        });
+    } catch (error) {
+        console.error('Error during unban:', error);
+
+        // Handle unknown users or errors
+        return interaction.update({
+            content: `An error occurred while unbanning the user with ID: ${userId}.`,
+            components: [],
+        });
+    }
+});
+
+
+// Handle pagination for the dropdown
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isButton() || interaction.customId !== 'nextPage') return;
+
+    try {
+        let currentPage = parseInt(interaction.message.content.match(/\d+/g)[0]) - 1; // Extract current page
+        currentPage++;
+
+        const bans = db.prepare('SELECT * FROM global_bans').all();
+        const MAX_OPTIONS = 25;
+        const totalPages = Math.ceil(bans.length / MAX_OPTIONS);
+
+        if (currentPage >= totalPages) {
+            return interaction.reply({
+                content: 'No more pages available.',
+                flags: 64
+            });
+        }
+
+        // Generate new options
+        const newOptions = bans.slice(currentPage * MAX_OPTIONS, (currentPage + 1) * MAX_OPTIONS).map((ban) => {
+            return {
+                label: `User ID: ${ban.user_id}`,
+                description: ban.expires_at
+                    ? `Expires: <t:${Math.floor(ban.expires_at / 1000)}:R>`
+                    : 'Permanent Ban',
+                value: ban.user_id
+            };
+        });
+
+        // Create new dropdown menu
+        const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId(`selectUnbanUser_${currentPage}`)
+            .setPlaceholder('Select a user to unban')
+            .addOptions(newOptions);
+
+        // Add "Next Page" button if there are more pages
+        const components = [new ActionRowBuilder().addComponents(selectMenu)];
+        if (currentPage < totalPages - 1) {
+            components.push(new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('nextPage')
+                    .setLabel('Next Page ➡️')
+                    .setStyle(ButtonStyle.Primary)
+            ));
+        }
+
+        return interaction.update({
+            content: `Select a user from the list to unban: (Page **${currentPage + 1}** of **${totalPages}**)`,
+            components
+        });
+
+    } catch (error) {
+        console.error('Error handling pagination:', error);
+        return interaction.reply({
+            content: 'An error occurred while fetching the next page.',
+            flags: 64
+        });
+    }
+});
+
+
+// Synchronize bans between Discord and the database
+async function synchronizeBans() {
+    try {
+        console.log("Synchronizing bans...");
+
+        // Fetch all current bans from the database
+        const dbBans = db.prepare('SELECT * FROM global_bans').all();
+        const dbBansMap = new Map(dbBans.map(ban => [ban.user_id, ban]));
+
+        // Track users banned in guilds to prevent duplicate operations
+        const guildBansMap = new Map();
+
+        // Iterate over all guilds and fetch bans
+        for (const [guildId, guild] of client.guilds.cache) {
+            try {
+                const bans = await guild.bans.fetch();
+
+                for (const [userId, banInfo] of bans) {
+                    // Add to guild bans map for tracking
+                    guildBansMap.set(userId, banInfo);
+
+                    // If the ban doesn't exist in the database, add it
+                    if (!dbBansMap.has(userId)) {
+                        const reason = banInfo.reason || 'No reason provided';
+                        db.prepare(`
+                            INSERT INTO global_bans (user_id, reason, expires_at)
+                            VALUES (?, ?, NULL)
+                        `).run(userId, reason);
+                    }
+                }
+            } catch (error) {
+                console.error(`Failed to fetch bans for guild ${guild.name}:`, error);
+            }
+        }
+
+        // Reapply any bans missing from guilds
+        for (const dbBan of dbBans) {
+            if (!guildBansMap.has(dbBan.user_id)) {
+                console.log(`Reapplying ban for user ${dbBan.user_id} (${dbBan.reason}) across guilds...`);
+
+                for (const [guildId, guild] of client.guilds.cache) {
+                    try {
+                        await guild.members.ban(dbBan.user_id, { reason: dbBan.reason });
+                        console.log(`Applied ban for user ${dbBan.user_id} in guild ${guild.name}`);
+                    } catch (error) {
+                        console.error(`Failed to apply ban in guild ${guild.name}:`, error);
+                    }
+                }
+            }
+        }
+
+        console.log("Ban synchronization complete.");
+    } catch (error) {
+        console.error("Error during ban synchronization:", error);
+    }
+}
 
 // manage command roles handler
 client.on("interactionCreate", async (interaction) => {
@@ -1161,7 +1427,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!interaction.member.permissions.has("Administrator")) {
             return interaction.reply({
                 content: "You do not have permission to use this command. Only administrators can manage command roles.",
-                flags: 64,
+                flags: 64
             });
         }
 
@@ -1171,7 +1437,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!role) {
             return interaction.reply({
                 content: "You must specify a valid role.",
-                flags: 64,
+                flags: 64
             });
         }
 
@@ -1188,7 +1454,7 @@ client.on("interactionCreate", async (interaction) => {
 
                 await interaction.reply({
                     content: `Role **${role.name}** has been added to the command roles list.`,
-                    flags: 64,
+                    flags: 64
                 });
             } else if (action === "remove") {
                 // Remove role from the command_roles table
@@ -1199,28 +1465,268 @@ client.on("interactionCreate", async (interaction) => {
                 if (changes.changes === 0) {
                     return interaction.reply({
                         content: `Role **${role.name}** was not found in the command roles list.`,
-                        flags: 64,
+                        flags: 64
                     });
                 }
 
                 await interaction.reply({
                     content: `Role **${role.name}** has been removed from the command roles list.`,
-                    flags: 64,
+                    flags: 64
                 });
             } else {
                 // Invalid action
                 await interaction.reply({
                     content: "Invalid action. Use 'add' or 'remove'.",
-                    flags: 64,
+                    flags: 64
                 });
             }
         } catch (error) {
             console.error("Error managing command roles:", error);
             await interaction.reply({
                 content: "An error occurred while managing command roles.",
+                flags: 64
+            });
+        }
+    }
+});
+
+// Set Log Channel Command
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-setlogchannel') return;
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64
+        });
+    }
+
+    const guildId = interaction.guild?.id;
+    const channel = interaction.options.getChannel('channel'); // Ensure this is set as an option in the command registration
+
+    if (!guildId) {
+        return interaction.reply({
+            content: 'This command can only be used in a server.',
+            flags: 64,
+        });
+    }
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to set the log channel.',
+            flags: 64,
+        });
+    }
+
+    if (!channel || !channel.isTextBased()) {
+        return interaction.reply({
+            content: 'Please select a valid text channel.',
+            flags: 64,
+        });
+    }
+
+    try {
+        // Store the log channel in the database
+        db.prepare(`
+            INSERT INTO guild_settings (guild_id, log_channel)
+            VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET log_channel = excluded.log_channel
+        `).run(guildId, channel.id);
+
+        await interaction.reply({
+            content: `✅ Log channel has been set to **${channel.name}**.`,
+        });
+
+    } catch (error) {
+        console.error('Error setting log channel:', error);
+        return interaction.reply({
+            content: 'An error occurred while setting the log channel. Please try again later.',
+            flags: 64,
+        });
+    }
+});
+
+// Open Ticket Command
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-openticket') return;
+
+    // Create the select menu for ticket type
+    const typeMenu = new StringSelectMenuBuilder()
+        .setCustomId('selectTicketType')
+        .setPlaceholder('Select the type of ticket')
+        .addOptions([
+            { label: 'Support', value: 'support', description: 'General support ticket' },
+            { label: 'Report', value: 'report', description: 'Report a user or issue' }
+        ]);
+
+    const row = new ActionRowBuilder().addComponents(typeMenu);
+
+    await interaction.reply({
+        content: 'Please select the type of ticket:',
+        components: [row],
+        flags: 64
+    });
+});
+
+// Handle ticket type selection
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu()) return;
+
+    if (interaction.customId === 'selectTicketType') {
+        const selectedType = interaction.values[0]; // Ensure selectedType is assigned
+
+        if (selectedType === 'report') {
+            // Show category selection for reports
+            const reportCategories = new StringSelectMenuBuilder()
+                .setCustomId('selectReportCategory')
+                .setPlaceholder('Select a category for your report')
+                .addOptions([
+                    { label: 'Harassment', value: 'harassment' },
+                    { label: 'Spam', value: 'spam' },
+                    { label: 'Scam', value: 'scam' },
+                    { label: 'Other', value: 'other' },
+                ]);
+
+            return interaction.reply({
+                content: 'Please select a category for your report:',
+                components: [new ActionRowBuilder().addComponents(reportCategories)],
+                flags: 64,
+            });
+        } else {
+            // Create a support ticket
+            await createTicketChannel(interaction, selectedType); // Pass selectedType to function
+        }
+    }
+});
+
+// Handle report category selection
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu()) return;
+
+    if (interaction.customId === 'selectReportCategory') {
+        const selectedCategory = interaction.values[0]; // Capture selected category
+
+        await createTicketChannel(interaction, 'report', selectedCategory); // Pass both type and category
+    }
+});
+
+// Create a ticket channel
+async function createTicketChannel(interaction, selectedType, selectedCategory = null) {
+    const guild = interaction.guild;
+    const user = interaction.user;
+    const categoryName = selectedCategory ? `Report-${selectedCategory}` : selectedType;
+
+    // Define channel name
+    const channelName = `${categoryName}-${user.username}`;
+
+    try {
+        const channel = await guild.channels.create({
+            name: channelName,
+            type: ChannelType.GuildText,
+            permissionOverwrites: [
+                {
+                    id: user.id,
+                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+                }
+            ]
+        });
+
+        await interaction.reply({
+            content: `Ticket created: <#${channel.id}>`,
+            flags: 64
+        });
+
+        await channel.send({
+            content: `Hello ${user}, please describe your issue or report.`,
+        });
+
+    } catch (error) {
+        console.error("Error creating ticket channel:", error);
+        await interaction.reply({
+            content: "There was an error creating your ticket. Please try again later.",
+            flags: 64
+        });
+    }
+}
+
+// Close Ticket Command
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-closeticket') return;
+
+    const guildId = interaction.guild?.id;
+    const channel = interaction.channel;
+    const user = interaction.user;
+
+    if (!guildId) {
+        return interaction.reply({
+            content: 'This command can only be used in a server.',
+            flags: 64,
+        });
+    }
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to close this ticket.',
+            flags: 64,
+        });
+    }
+
+    try {
+        // Fetch the log channel from the database
+        console.log(`Fetching log channel for guild: ${guildId}`);
+        const result = db.prepare('SELECT log_channel FROM guild_settings WHERE guild_id = ?').get(guildId);
+
+        if (!result || !result.log_channel) {
+            return interaction.reply({
+                content: 'No log channel is set. Use `/tgc-setlogchannel` to set it.',
                 flags: 64,
             });
         }
+
+        const logChannelId = result.log_channel;
+        const logChannel = interaction.guild.channels.cache.get(logChannelId);
+        
+        if (!logChannel) {
+            return interaction.reply({
+                content: 'The configured log channel is invalid or inaccessible. Please set it again.',
+                flags: 64,
+            });
+        }
+
+        // Fetch messages from the ticket channel
+        const messages = await channel.messages.fetch({ limit: 100 });
+        const transcript = messages
+            .reverse()
+            .map(msg => `[${new Date(msg.createdTimestamp).toLocaleString()}] ${msg.author.tag}: ${msg.content}`)
+            .join('\n');
+
+        // Save transcript to a file
+        const fs = require('fs');
+        const path = require('path');
+        const logFolder = path.join(__dirname, 'ticket_logs');
+        if (!fs.existsSync(logFolder)) fs.mkdirSync(logFolder);
+
+        const transcriptPath = path.join(logFolder, `ticket-${channel.id}.txt`);
+        fs.writeFileSync(transcriptPath, transcript);
+
+        // Send the log file to the log channel
+        await logChannel.send({
+            content: `📝 **Ticket Closed**\n👤 **Closed By:** ${user.tag}\n📌 **Channel:** ${channel.name}`,
+            files: [transcriptPath],
+        });
+
+        // Delete the ticket channel
+        await channel.delete();
+
+    } catch (error) {
+        console.error('Error closing ticket:', error);
+        return interaction.reply({
+            content: 'An error occurred while closing the ticket. Please try again later.',
+            flags: 64,
+        });
     }
 });
 
@@ -1324,6 +1830,16 @@ if (member) {
 });
 
 // Bot Ready
+
+// Run synchronization every 5 minutes
+client.once('ready', async () => {
+    console.log(`Logged in as ${client.user.tag}`);
+    await synchronizeBans(); // Run the sync on startup
+});
+setInterval(async () => {
+    await synchronizeBans();
+}, 5 * 60 * 1000); // 5 minutes
+
 client.on('ready', () => {
     console.log('Bot is ready!');
     console.log(`Available Guilds: ${client.guilds.cache.size}`);
