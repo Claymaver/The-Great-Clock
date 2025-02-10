@@ -122,13 +122,21 @@ The **Great Clock Bot** is a Discord bot designed for XP leveling, role manageme
       - User IDs.  
       - Reasons.  
       - Ban expiration (relative time for temporary bans).  
+14. **`/tgc-openticket`**
+   - allows users to report issues or ask staff for assistance
+
+15. **`/tgc-closeticket`**
+   - closes current ticket
+
+16 **`/tgc-setlogchanne`**
+   - sets logging channel for tickets
 
 ---
 
 ### **Role-Based Command Permissions**  
 
 - Most commands are now restricted based on roles configured via the `/tgc-managecommandroles` command.  
-- The **`/tgc-profile`** command is **public** and can be used by anyone.  
+- The **`/tgc-profile`** and **`/tgc-openticket`** are **public** and can be used by anyone.  
 - Other commands require the user to have a role specified in the `command_roles` table.  
 
 ---
