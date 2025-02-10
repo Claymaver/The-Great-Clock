@@ -1,11 +1,11 @@
-const {
-    Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,ButtonBuilder,ButtonStyle,ChannelType, PermissionsBitField } = require('discord.js');require('dotenv').config();
+const {Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,ButtonBuilder,ButtonStyle,ChannelType, PermissionsBitField,StringSelectMenuOptionBuilder } = require('discord.js');require('dotenv').config();
 
     const client = new Client({
         intents: [
             GatewayIntentBits.Guilds,
             GatewayIntentBits.GuildMembers,
             GatewayIntentBits.GuildMessages,
+            GatewayIntentBits.MessageContent,
         ],
     });
 
@@ -43,6 +43,15 @@ db.exec(`
         command_name TEXT NOT NULL,
         role_id TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS channel_links (
+        source_channel_id TEXT PRIMARY KEY,
+        target_channel_id TEXT NOT NULL,
+        embed_color TEXT DEFAULT '00AE86'
+    );
+    CREATE TABLE IF NOT EXISTS autopublish_channels (
+    channel_id TEXT PRIMARY KEY,
+    enabled BOOLEAN DEFAULT 1
+    );
 `);
 
 function checkCommandPermission(interaction) {
@@ -69,9 +78,9 @@ function checkCommandPermission(interaction) {
 // Ensure schema is updated
 try {
     db.prepare(`SELECT multiplier FROM guild_settings LIMIT 1`).get();
-} catch (error) {
-    console.log("Updating schema: Adding 'multiplier' column to 'guild_settings'.");
-    db.exec(`ALTER TABLE guild_settings ADD COLUMN multiplier REAL DEFAULT 1.11`);
+    } catch (error) {
+        console.log("Updating schema: Adding 'multiplier' column to 'guild_settings'.");
+        db.exec(`ALTER TABLE guild_settings ADD COLUMN multiplier REAL DEFAULT 1.11`);
 }
 
 const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -269,6 +278,36 @@ const commands = [
     new SlashCommandBuilder()
     .setName('tgc-openticket')
     .setDescription('Opens a support ticket for help or reporting.'),
+    new SlashCommandBuilder()
+    .setName("tgc-forward")
+    .setDescription("Set up message forwarding between two channels with an optional embed color.")
+    .addStringOption(option =>
+        option.setName("source_id")
+            .setDescription("Source channel ID (where messages are forwarded from)")
+            .setRequired(true))
+    .addStringOption(option =>
+        option.setName("target_id")
+            .setDescription("Target channel ID (where messages will be sent)")
+            .setRequired(true))
+    .addStringOption(option =>
+        option.setName("color")
+            .setDescription("Embed color (e.g., 'Red', 'Light Blue', 'Green')")
+            .setRequired(false)),
+new SlashCommandBuilder()
+    .setName("tgc-removeforward")
+    .setDescription("Remove message forwarding from a source channel.")
+    .addStringOption(option =>
+        option.setName("source_id")
+            .setDescription("Source channel ID to remove from forwarding")
+            .setRequired(true)),
+            new SlashCommandBuilder()
+            .setName("tgc-toggleautopublish")
+            .setDescription("Enable or disable auto-publishing for a specific announcement channel.")
+            .addChannelOption(option =>
+                option.setName("channel")
+                    .setDescription("The announcement channel to toggle auto-publishing for")
+                    .setRequired(true)),
+    
 ];
 
 // Register Commands
@@ -284,6 +323,21 @@ const commands = [
         console.error('Error registering commands:', error);
     }
 })();
+
+// Predefined Embed Colors
+const EMBED_COLORS = {
+    "Pink": "eb0062",
+    "Red": "ff0000",
+    "Dark Red": "7c1e1e",
+    "Orange": "ff4800",
+    "Yellow": "ffe500",
+    "Green": "1aff00",
+    "Forest Green": "147839",
+    "Light Blue": "00bdff",
+    "Dark Blue": "356feb",
+    "Purple": "76009a",
+    "Default (Teal)": "00AE86"
+};
 
 // Command Handling
 client.on('interactionCreate', async (interaction) => {
@@ -700,7 +754,7 @@ client.on('interactionCreate', async (interaction) => {
         .setLabel('Title Name')
         .setPlaceholder('Enter title name')
         .setStyle(TextInputStyle.Short)
-        .setRequired(true);
+        .setRequired(false);
     
     const authorLinkInput = new TextInputBuilder()
         .setCustomId('embedTitleLink')
@@ -740,7 +794,6 @@ client.on('interactionCreate', async (interaction) => {
 
     await interaction.showModal(modal);
 });
-
 
 // Step 2: Handle Modal Submission
 client.on('interactionCreate', async (interaction) => {
@@ -798,8 +851,6 @@ client.on('interactionCreate', async (interaction) => {
     });
 });
 
-
-
 // Step 3: Handle Color Selection
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectColor') return;
@@ -842,7 +893,6 @@ client.on('interactionCreate', async (interaction) => {
         }
     }, 500); // Delay to avoid interaction conflict
 });
-
 
 // Step 4: Handle Channel Search and Display Results
 client.on('interactionCreate', async (interaction) => {
@@ -974,8 +1024,6 @@ client.on('interactionCreate', async (interaction) => {
         components: [],
     });
 });
-
-
 
 // Ban Command
 client.on('interactionCreate', async (interaction) => {
@@ -1319,7 +1367,6 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-
 // Handle pagination for the dropdown
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton() || interaction.customId !== 'nextPage') return;
@@ -1380,7 +1427,6 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 });
-
 
 // Synchronize bans between Discord and the database
 async function synchronizeBans() {
@@ -1751,6 +1797,182 @@ client.on('interactionCreate', async (interaction) => {
             flags: 64,
         });
     }
+});
+
+// Automatically publishes messages sent in announcement/news channels.
+client.on("interactionCreate", async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "tgc-toggleautopublish") {
+        const channel = interaction.options.getChannel("channel");
+
+        // Ensure it's an announcement channel
+        if (channel.type !== ChannelType.GuildAnnouncement) {
+            return interaction.reply({ content: "❌ You can only toggle auto-publishing for announcement channels.", flags: 64 });
+        }
+
+        // Check current state
+        const row = db.prepare("SELECT enabled FROM autopublish_channels WHERE channel_id = ?").get(channel.id);
+
+        let newState;
+        if (!row) {
+            // If no record exists, enable auto-publishing by default
+            db.prepare("INSERT INTO autopublish_channels (channel_id, enabled) VALUES (?, ?)").run(channel.id, 1);
+            newState = true;
+        } else {
+            // Toggle the state
+            newState = row.enabled ? 0 : 1;
+            db.prepare("UPDATE autopublish_channels SET enabled = ? WHERE channel_id = ?").run(newState, channel.id);
+        }
+
+        interaction.reply({
+            content: `✅ Auto-publishing is now **${newState ? "enabled" : "disabled"}** for <#${channel.id}>.`,
+            flags: 64
+        });
+
+        console.log(`🔄 Auto-publishing toggled to ${newState ? "enabled" : "disabled"} for channel ${channel.id}`);
+    }
+});
+
+// Auto-publishing system (checks per-channel toggle)
+client.on("messageCreate", async (message) => {
+    if (message.author.bot) return;
+
+    // Check if the message is in an announcement channel
+    if (message.channel.type === ChannelType.GuildAnnouncement) {
+        const channelId = message.channel.id;
+
+        // Check if auto-publishing is enabled for this channel
+        const row = db.prepare("SELECT enabled FROM autopublish_channels WHERE channel_id = ?").get(channelId);
+        if (!row || row.enabled === 0) {
+            console.log(`⏳ Auto-publishing is disabled for #${message.channel.name}. Skipping.`);
+            return;
+        }
+
+        try {
+            await message.crosspost(); // Publish the message
+            console.log(`✅ Auto-published message in #${message.channel.name} (${message.guild.name})`);
+        } catch (error) {
+            console.error(`❌ Failed to auto-publish message in #${message.channel.name}:`, error);
+        }
+    }
+});
+
+
+// forward Channel Command
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "tgc-forward") {
+        const sourceChannelId = interaction.options.getString("source_id");
+        const targetChannelId = interaction.options.getString("target_id");
+        const colorName = interaction.options.getString("color") || "Default (Teal)"; // Default color if none is chosen
+
+        // Validate color choice
+        const embedColor = EMBED_COLORS[colorName];
+        if (!embedColor) {
+            return interaction.reply({ content: `❌ Invalid color choice. Please use one of: ${Object.keys(EMBED_COLORS).join(", ")}`, flags: 64 });
+        }
+
+        // Validate channels
+        const sourceChannel = await client.channels.fetch(sourceChannelId).catch(() => null);
+        const targetChannel = await client.channels.fetch(targetChannelId).catch(() => null);
+
+        if (!sourceChannel || !targetChannel) {
+            return interaction.reply({ content: "❌ Invalid channel IDs or bot lacks access.", flags: 64 });
+        }
+
+        // Store in database
+        db.prepare(`
+            INSERT INTO channel_links (source_channel_id, target_channel_id, embed_color)
+            VALUES (?, ?, ?)
+            ON CONFLICT(source_channel_id) DO UPDATE SET target_channel_id = excluded.target_channel_id, embed_color = excluded.embed_color
+        `).run(sourceChannelId, targetChannelId, embedColor);
+
+        console.log(`✅ Channel forwarding set: ${sourceChannelId} → ${targetChannelId} with color ${colorName}`);
+
+        interaction.reply({
+            content: `✅ Messages from <#${sourceChannelId}> will now be forwarded to <#${targetChannelId}> with embed color **${colorName}**.`,
+            flags: 64
+        });
+    }
+
+    if (interaction.commandName === "tgc-removeforward") {
+        const sourceChannelId = interaction.options.getString("source_id");
+
+        // Validate source channel
+        const sourceChannel = await client.channels.fetch(sourceChannelId).catch(() => null);
+        if (!sourceChannel) {
+            return interaction.reply({ content: "❌ Invalid source channel ID or bot lacks access.", flags: 64 });
+        }
+
+        // Remove from database
+        const result = db.prepare("DELETE FROM channel_links WHERE source_channel_id = ?").run(sourceChannelId);
+
+        if (result.changes > 0) {
+            console.log(`❌ Forwarding removed: ${sourceChannelId}`);
+            interaction.reply({
+                content: `✅ Forwarding from <#${sourceChannelId}> has been removed.`,
+                flags: 64
+            });
+        } else {
+            interaction.reply({
+                content: `⚠️ No forwarding rule found for <#${sourceChannelId}>.`,
+                flags: 64
+            });
+        }
+    }
+});
+
+// ✅ Debugging Message Listener
+client.on("messageCreate", async (message) => {
+    if (message.author.bot || !message.guild) return;
+    
+    console.log(`📩 Message detected in ${message.channel.id}: ${message.content}`);
+
+    // Fetch target channel and embed color from DB
+    const row = db.prepare("SELECT target_channel_id, embed_color FROM channel_links WHERE source_channel_id = ?").get(message.channel.id);
+    
+    if (!row) {
+        console.log(`⚠️ No forwarding found for channel ${message.channel.id}`);
+        return;
+    }
+
+    const targetChannel = await client.channels.fetch(row.target_channel_id).catch(() => null);
+    if (!targetChannel) {
+        console.log(`❌ Cannot fetch target channel: ${row.target_channel_id}`);
+        return;
+    }
+
+    console.log(`➡️ Forwarding message to ${row.target_channel_id}`);
+
+    // Convert embed color to integer (Discord expects a base 10 integer for color)
+    const embedColorInt = parseInt(row.embed_color, 16);
+
+    // Create an embed
+    const embed = new EmbedBuilder()
+        .setColor(embedColorInt)
+        .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+        .setTimestamp()
+        .setFooter({ text: `From ${message.guild.name}` });
+
+    if (message.content) embed.setDescription(message.content);
+
+    const mediaUrls = message.attachments.map(attachment => attachment.url);
+    if (mediaUrls.length > 0) {
+        embed.setImage(mediaUrls[0]);
+        if (mediaUrls.length > 1) targetChannel.send(mediaUrls.slice(1).join("\n"));
+    }
+
+    const messageLink = `https://discord.com/channels/${message.guild.id}/${message.channel.id}/${message.id}`;
+    const rowComponent = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setLabel("View Original Message")
+            .setStyle(ButtonStyle.Link)
+            .setURL(messageLink)
+    );
+
+    targetChannel.send({ embeds: [embed], components: [rowComponent] }).catch(console.error);
 });
 
 // In-memory cooldown map
