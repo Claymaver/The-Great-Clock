@@ -10,6 +10,7 @@ const {Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,Mod
     });
 
 const Database = require('better-sqlite3');
+const { channel } = require('diagnostics_channel');
 
 // Initialize Database
 const db = new Database('leveling.db', { verbose: console.log }); 
@@ -90,6 +91,12 @@ shopDB.exec(`
         id INTEGER PRIMARY KEY CHECK (id = 1), 
         amount INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS deathbattle_stats (
+    user_id TEXT PRIMARY KEY,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0
+);
+
 `);
 
 function checkCommandPermission(interaction) {
@@ -259,6 +266,13 @@ const commands = [
                 option.setName("file")
                     .setDescription("The JSON file to import user data from.")
                     .setRequired(true)),
+        new SlashCommandBuilder()
+                .setName("tgc-xpleaderboard")
+                .setDescription("View the top XP leaderboard."),
+                    
+        new SlashCommandBuilder()
+                .setName("tgc-battleleaderboard")
+                .setDescription("View the top players in Death Battle."),
     
         // ===============================
         // 🔧 Moderation & Management Commands
@@ -336,7 +350,20 @@ const commands = [
                 option.setName("channel")
                     .setDescription("The channel to send the message in.")
                     .setRequired(true)),
-    
+        new SlashCommandBuilder ()
+                .setName ("tgc-openticket")
+                .setDescription ("opens a support ticket"),
+        new SlashCommandBuilder ()
+                .setName ("tgc-closeticket")
+                .setDescription ("closes a support ticket"),
+        new SlashCommandBuilder()
+                .setName('tgc-setlogchannel')
+                .setDescription('Sets the log channel for this server.')
+                .addChannelOption(option =>
+                    option.setName('channel')
+                        .setDescription('Select the log channel')
+                        .setRequired(true)
+                ),
         // ===============================
         // 📢 Auto-Publishing & Forwarding Commands
         // ===============================
@@ -538,7 +565,7 @@ const commands = [
     }
 })();
 
-// Predefined Embed Colors
+// Define color constants
 const EMBED_COLORS = {
     "Pink": "eb0062",
     "Red": "ff0000",
@@ -550,7 +577,7 @@ const EMBED_COLORS = {
     "Light Blue": "00bdff",
     "Dark Blue": "356feb",
     "Purple": "76009a",
-    "Default (Teal)": "00AE86"
+    "Default": "00AE86"
 };
 
 // ===============================
@@ -719,6 +746,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setTitle('XP Updated ✅')
                     .setDescription(`Set XP for **${user.username}** to **${finalXp}**.\nCurrent Level: **${newLevel}**.`)
                     .setColor('#00FF00')],
+                flags: 64
             });
         } catch (error) {
             console.error('Error setting XP:', error);
@@ -903,7 +931,7 @@ client.on('interactionCreate', async (interaction) => {
             const progressBar = '█'.repeat(progressBarFilled) + '░'.repeat(progressBarLength - progressBarFilled);
     
             // Estimate Messages to Level Up
-            const averageXpPerMessage = 3; // Adjust as needed
+            const averageXpPerMessage = 12; // Adjust as needed
             const messagesToNextLevel = Math.ceil((xpRequired - xpProgress) / averageXpPerMessage);
     
             // Fetch User Avatar Properly
@@ -945,309 +973,990 @@ client.on('interactionCreate', async (interaction) => {
  //    Moderation & Management
  // ===============================
 
-// Temporary storage for embed data
-const tempEmbedData = {};
+// Global state management
+const tempEmbedData = new Map();
 
-// Command createembed
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isCommand() || interaction.commandName !== 'tgc-createembed') return;
-
-    const guildId = interaction.guild?.id;
-
-    // Ensure the command is being used in a guild
-    if (!guildId) {
-        return interaction.reply({ content: 'This command can only be used in a server.', flags: 64 });
-    }
-
-    // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
-    }
-
-    ensureGuildSettings(guildId);
-
-    // Step 1: Display Modal
-    const modal = new ModalBuilder()
-        .setCustomId('embedModal')
-        .setTitle('Create an Embed');
-
-    const authorInput = new TextInputBuilder()
-        .setCustomId('embedTitle')
-        .setLabel('Title Name')
-        .setPlaceholder('Enter title name')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
+// Rate limiting utility
+const rateLimits = new Map();
+function checkRateLimit(userId) {
+    const now = Date.now();
+    const cooldown = 60000; // 1 minute cooldown
     
-    const authorLinkInput = new TextInputBuilder()
-        .setCustomId('embedTitleLink')
-        .setLabel('Title Link (optional)')
-        .setPlaceholder('Enter URL for title name')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-    
-    const descriptionInput = new TextInputBuilder()
-        .setCustomId('embedDescription')
-        .setLabel('Embed Description')
-        .setPlaceholder('Enter the description of the embed')
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true);
-
-    const imageInput = new TextInputBuilder()
-        .setCustomId('embedImage')
-        .setLabel('Image URL (Optional)')
-        .setPlaceholder('Enter a direct link to the image')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-
-    const thumbnailInput = new TextInputBuilder()
-        .setCustomId('embedThumbnail')
-        .setLabel('Thumbnail URL (optional)')
-        .setPlaceholder('Enter a direct link to the thumbnail image')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-
-    modal.addComponents(
-        new ActionRowBuilder().addComponents(authorInput),
-        new ActionRowBuilder().addComponents(authorLinkInput),
-        new ActionRowBuilder().addComponents(descriptionInput),
-        new ActionRowBuilder().addComponents(imageInput),
-        new ActionRowBuilder().addComponents(thumbnailInput)
-    );
-
-    await interaction.showModal(modal);
-});
-
-// Step 2: Handle Modal Submission
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isModalSubmit() || interaction.customId !== 'embedModal') return;
-
-    const title = interaction.fields.getTextInputValue('embedTitle')?.trim() || null;
-    const titleLink = interaction.fields.getTextInputValue('embedTitleLink')?.trim() || null;
-    const description = interaction.fields.getTextInputValue('embedDescription').trim();
-    const imageUrl = interaction.fields.getTextInputValue('embedImage')?.trim();
-    const thumbnailUrl = interaction.fields.getTextInputValue('embedThumbnail')?.trim();
-
-
-    // Validate title and description
-    if (!title || !description) {
-        return interaction.reply({
-            content: 'Both Title and Description are required. Please try again.',
-            flags: 64
-        });
+    if (rateLimits.has(userId)) {
+        const lastUse = rateLimits.get(userId);
+        if (now - lastUse < cooldown) return false;
     }
+    
+    rateLimits.set(userId, now);
+    return true;
+}
 
-    // Store data in tempEmbedData
-    tempEmbedData[interaction.user.id] = { 
-        title, 
-        titleLink, 
-        description, 
-        image: imageUrl, 
-        thumbnail: thumbnailUrl 
-    };
-
-    // Proceed to color selection
-    const colorOptions = [
-        { label: 'Pink', value: '#eb0062' },
-        { label: 'Red', value: '#ff0000' },
-        { label: 'Dark Red', value: '#7c1e1e' },
-        { label: 'Orange', value: '#ff4800' },
-        { label: 'Yellow', value: '#ffe500' },
-        { label: 'Green', value: '#1aff00' },
-        { label: 'Forest Green', value: '#147839' },
-        { label: 'Light Blue', value: '#00bdff' },
-        { label: 'Dark Blue', value: '#356feb' },
-        { label: 'Purple', value: '#76009a' },
-    ];
-
-    const colorMenu = new StringSelectMenuBuilder()
-        .setCustomId('selectColor')
-        .setPlaceholder('Choose a color for your embed')
-        .addOptions(colorOptions);
-
-    const colorRow = new ActionRowBuilder().addComponents(colorMenu);
-
-    await interaction.reply({
-        content: 'Select a color for your embed:',
-        components: [colorRow],
-        flags: 64
+// Embed Session
+function createEmbedSession(userId) {
+    tempEmbedData.set(userId, {
+        title: '',
+        description: '',
+        color: '',
+        footer: '',
+        image: '',
+        thumbnail: '',
+        titleLink: '',
+        selectedGuild: null,
+        selectedChannel: null,
+        messageId: null,
+        buttonLabel: '',
+        buttonUrl: ''
     });
+}
+
+
+// Cleanup function to remove old sessions
+function cleanupSessions() {
+    const now = Date.now();
+    const timeout = 3600000; // 1 hour timeout
+    
+    tempEmbedData.forEach((session, userId) => {
+        if (session.createdAt && now - session.createdAt > timeout) {
+            tempEmbedData.delete(userId);
+        }
+    });
+}
+
+// Run cleanup every hour
+setInterval(cleanupSessions, 3600000);
+
+client.on('error', error => {
+    console.error('Client error:', error);
 });
 
-// Step 3: Handle Color Selection
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectColor') return;
+process.on('unhandledRejection', error => {
+    console.error('Unhandled promise rejection:', error);
+});
 
-    const selectedColor = interaction.values[0]; // Selected hex color value
-    const embedData = tempEmbedData[interaction.user.id];
+// Command Handler
+client.on("interactionCreate", async (interaction) => {
+    try {
+        if (!interaction.isCommand() || interaction.commandName !== "tgc-createembed") return;
 
-    if (!embedData) {
-        return interaction.update({
-            content: '❌ No embed data found. Please restart the command.',
-            components: [],
+        const userId = interaction.user.id;
+
+        // Check if user has permission to use this command
+        if (!interaction.member.permissions.has('ManageMessages')) {
+            return interaction.reply({
+                content: "❌ You don't have permission to use this command!",
+                flags: 64
+            });
+        }
+
+        // Rate limit check
+        if (!checkRateLimit(userId)) {
+            return interaction.reply({ 
+                content: "⚠️ Please wait a minute before creating another embed!", 
+                flags: 64 
+            });
+        }
+
+        // Active session check
+        if (tempEmbedData.has(userId)) {
+            return interaction.reply({ 
+                content: "⚠️ You already have an active embed session!", 
+                flags: 64 
+            });
+        }
+
+        // Create new embed session
+        createEmbedSession(userId);
+
+        // Get available guilds where bot has permission to send messages
+        const guildOptions = interaction.client.guilds.cache
+            .filter(guild => {
+                const member = guild.members.cache.get(client.user.id);
+                return member && member.permissions.has('SendMessages');
+            })
+            .map(guild => ({
+                label: guild.name,
+                value: guild.id,
+                description: `ID: ${guild.id}`
+            }))
+            .slice(0, 25);
+
+        if (guildOptions.length === 0) {
+            return interaction.reply({ 
+                content: "❌ Bot is not in any servers or lacks necessary permissions!", 
+                flags: 64 
+            });
+        }
+
+        // Create server selection dropdown
+        const serverDropdown = new StringSelectMenuBuilder()
+            .setCustomId(`embed_select_server_${userId}`)
+            .setPlaceholder("🌎 Select a Server")
+            .addOptions(guildOptions);
+
+        const row = new ActionRowBuilder().addComponents(serverDropdown);
+
+        // Send initial response
+        await interaction.reply({
+            content: "🌎 **Select a Server to Send the Embed:**",
+            components: [row],
             flags: 64
         });
-    }
 
-    // Add color to embed data
-    embedData.color = selectedColor;
-
-    // Short delay to ensure Discord processes the defer before showing the modal
-    setTimeout(async () => {
-        try {
-            // Prompt user to search for channels with a modal
-            const modal = new ModalBuilder()
-                .setCustomId('channelSearchModal')
-                .setTitle('Search for Channels');
-
-            const channelSearchInput = new TextInputBuilder()
-                .setCustomId('channelSearch')
-                .setLabel('Enter channel name or keyword')
-                .setPlaceholder('e.g., general, updates')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true);
-
-            const actionRow = new ActionRowBuilder().addComponents(channelSearchInput);
-            modal.addComponents(actionRow);
-
-            await interaction.showModal(modal);
-        } catch (error) {
-            console.error('Error displaying channel search modal:', error);
+    } catch (error) {
+        console.error('Error in create embed command:', error);
+        
+        // Attempt to reply if we haven't already
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ 
+                content: "❌ An error occurred while creating the embed session.", 
+                flags: 64 
+            }).catch(console.error);
         }
-    }, 500); // Delay to avoid interaction conflict
+    }
 });
 
-// Step 4: Handle Channel Search and Display Results
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isModalSubmit() || interaction.customId !== 'channelSearchModal') return;
+// Server Selection Handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isStringSelectMenu() || !interaction.customId.startsWith("embed_select_server_")) return;
 
-    await interaction.deferReply({ flags: 64 }); // Prevents timeout issues
+    try {
+        const userId = interaction.user.id;
+        
+        // Check if user has an active session
+        if (!tempEmbedData.has(userId)) {
+            return interaction.reply({ 
+                content: "❌ No active embed session found.", 
+                flags: 64 
+            });
+        }
 
-    const searchQuery = interaction.fields.getTextInputValue('channelSearch').trim().toLowerCase();
-    const searchTerms = searchQuery.split(',').map((term) => term.trim()); // Split by comma and trim
+        // Get selected guild
+        const guildId = interaction.values[0];
+        const guild = interaction.client.guilds.cache.get(guildId);
+        
+        // Validate guild exists
+        if (!guild) {
+            return interaction.update({ 
+                content: "❌ Server not found or bot no longer has access!", 
+                components: [],
+                flags: 64 
+            });
+        }
 
-    // Safely collect matching channels
-    const matchingChannels = [];
-    client.guilds.cache.forEach((guild) => {
-        if (!guild.channels || !guild.channels.cache) return; // Ensure channels exist
-        const textChannels = guild.channels.cache.filter((channel) =>
-            channel.isTextBased() &&
-            searchTerms.some((term) => channel.name.toLowerCase().includes(term)) // Match any search term
+        // Check bot permissions in the guild
+        const botMember = guild.members.cache.get(client.user.id);
+        if (!botMember || !botMember.permissions.has(['ViewChannel', 'SendMessages'])) {
+            return interaction.update({ 
+                content: "❌ Bot doesn't have required permissions in this server!", 
+                components: [],
+                flags: 64 
+            });
+        }
+
+        // Update session data
+        const sessionData = tempEmbedData.get(userId);
+        sessionData.selectedGuild = guildId;
+        tempEmbedData.set(userId, sessionData);
+
+        // Get available channels
+        const channels = guild.channels.cache
+            .filter(channel => 
+                channel.isTextBased() && 
+                !channel.isThread() && 
+                channel.permissionsFor(botMember).has(['SendMessages', 'ViewChannel']) &&
+                channel.permissionsFor(interaction.member).has(['SendMessages', 'ViewChannel'])
+            )
+            .map(channel => ({ 
+                label: `#${channel.name}`,
+                value: channel.id,
+                description: channel.parent ? `Category: ${channel.parent.name}` : 'No Category'
+            }))
+            .slice(0, 25);
+
+        // Check if any channels are available
+        if (channels.length === 0) {
+            return interaction.update({ 
+                content: "❌ No accessible text channels found in this server.", 
+                components: [],
+                flags: 64 
+            });
+        }
+
+        // Create channel selection dropdown
+        const channelDropdown = new StringSelectMenuBuilder()
+            .setCustomId(`embed_select_channel_${userId}`)
+            .setPlaceholder("📢 Select a Channel")
+            .addOptions(channels);
+
+        const row = new ActionRowBuilder().addComponents(channelDropdown);
+
+        // Update the message
+        await interaction.update({
+            content: `✅ **Selected Server:** ${guild.name}\n📢 **Please select a channel:**`,
+            components: [row],
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('Error in server selection:', error);
+        
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ 
+                content: "❌ An error occurred while processing server selection.", 
+                flags: 64 
+            }).catch(console.error);
+        } else {
+            await interaction.editReply({ 
+                content: "❌ An error occurred while processing server selection.", 
+                components: [],
+                flags: 64 
+            }).catch(console.error);
+        }
+    }
+});
+
+// Channel Selection Handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isStringSelectMenu() || !interaction.customId.startsWith("embed_select_channel_")) return;
+
+    try {
+        const userId = interaction.user.id;
+        
+        // Check for active session
+        if (!tempEmbedData.has(userId)) {
+            return interaction.reply({ 
+                content: "❌ No active embed session found.", 
+                ephemeral: true 
+            });
+        }
+
+        const session = tempEmbedData.get(userId);
+        const channelId = interaction.values[0];
+        
+        // Validate channel
+        const channel = await interaction.client.channels.fetch(channelId).catch(() => null);
+        if (!channel) {
+            return interaction.update({ 
+                content: "❌ Selected channel not found!", 
+                components: [],
+                ephemeral: true 
+            });
+        }
+
+        // Check if channel is text-based
+        if (!channel.isTextBased()) {
+            return interaction.update({
+                content: "❌ Selected channel must be a text channel!",
+                components: [],
+                ephemeral: true
+            });
+        }
+
+        // Check permissions
+        const permissions = channel.permissionsFor(interaction.client.user);
+        if (!permissions?.has(['SendMessages', 'ViewChannel', 'EmbedLinks'])) {
+            return interaction.update({ 
+                content: "❌ Bot doesn't have required permissions in this channel!", 
+                components: [],
+                ephemeral: true 
+            });
+        }
+
+        // Update session data
+        session.selectedChannel = channelId;
+        tempEmbedData.set(userId, session);
+
+        // Create button rows
+        const editButtons = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`embed_set_title_${userId}`)
+                .setLabel("📝 Title")
+                .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+                .setCustomId(`embed_set_titlelink_${userId}`)
+                .setLabel("🔗 Title Link")
+                .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+                .setCustomId(`embed_set_description_${userId}`)
+                .setLabel("📜 Description")
+                .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+                .setCustomId(`embed_set_footer_${userId}`)
+                .setLabel("🔽 Footer")
+                .setStyle(ButtonStyle.Secondary)
         );
-        textChannels.forEach((channel) => {
-            matchingChannels.push({
-                label: `${guild.name} - #${channel.name}`,
-                value: `${guild.id}:${channel.id}`,
+
+        const imageButtons = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`embed_set_image_${userId}`)
+                .setLabel("🖼️ Image")
+                .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId(`embed_set_thumbnail_${userId}`)
+                .setLabel("📎 Thumbnail")
+                .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId(`embed_set_color_${userId}`) // Fixed customId
+                .setLabel('🎨 Color')
+                .setStyle(ButtonStyle.Primary)
+        );
+
+        const buttonSettingsRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`embed_set_buttonlabel_${userId}`)
+                .setLabel("🏷️ Button Label")
+                .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId(`embed_set_buttonurl_${userId}`)
+                .setLabel("🔗 Button URL")
+                .setStyle(ButtonStyle.Secondary)
+        );
+
+        const actionButtons = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`embed_preview_${userId}`)
+                .setLabel("👀 Preview")
+                .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId(`embed_send_${userId}`)
+                .setLabel("🚀 Send")
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`embed_cancel_${userId}`)
+                .setLabel("❌ Cancel")
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        const content = [
+            `📢 **Selected Channel:** <#${channelId}>`,
+            "✏️ **Customize your embed:**",
+            "",
+            "**Required Fields:**",
+            "• Title or Description",
+            "",
+            "**Optional Fields:**",
+            "• Image/Thumbnail",
+            "• Footer",
+            "• Color",
+            "• Button (Label & URL)"
+        ].join('\n');
+
+        await interaction.update({
+            content,
+            components: [editButtons, imageButtons, buttonSettingsRow, actionButtons],
+            ephemeral: true
+        });  
+
+    } catch (error) {
+        console.error('Error in channel selection:', error);
+        
+        const errorMessage = "❌ An error occurred while processing channel selection.";
+        
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ 
+                content: errorMessage, 
+                ephemeral: true 
+            }).catch(console.error);
+        } else {
+            await interaction.editReply({ 
+                content: errorMessage, 
+                components: [],
+                ephemeral: true 
+            }).catch(console.error);
+        }
+    }
+});
+
+// Color selection handler
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton() || interaction.customId !== 'selectColor') return;
+
+    try {
+        const embedData = tempEmbedData.get(interaction.user.id);
+        if (!embedData) {
+            return await interaction.reply({
+                content: 'No embed data found. Please start over.',
+                flags: 64
+            });
+        }
+
+        await interaction.reply({ 
+            content: 'Please enter a color: pink, red, dark red, orange, yellow, green, forest green, light blue, dark blue, purple. (or a hex code #FF0000)',
+            flags: 64 
+        });
+
+        const filter = m => m.author.id === interaction.user.id;
+        const collector = interaction.channel.createMessageCollector({ 
+            filter, 
+            max: 1,
+            time: 30000
+        });
+
+        collector.on('collect', async message => {
+            try {
+                await message.delete();
+            } catch (err) {
+                console.error("Couldn't delete message:", err);
+            }
+
+            let color = message.content.toLowerCase();
+            if (!color.startsWith('#')) {
+                const colorMap = {
+                    'pink': '#EB0062',
+                    'red': '#FF0000',
+                    'dark red': '#7C1E1E',
+                    'orange': '#FF4800',
+                    'yellow': '#FFE500',
+                    'green': '#1AFF00',
+                    'forest green': '#147839',
+                    'light blue': '#00BDFF',
+                    'dark blue': '#356FEB',
+                    'purple': '#76009A'
+                };
+                color = colorMap[color] || color;
+            }
+
+            const isValidHex = /^#[0-9A-F]{6}$/i.test(color);
+            if (!isValidHex) {
+                return await interaction.editReply({ 
+                    content: 'Invalid color format! Please use a valid hex code (e.g., #FF0000) or color name.',
+                });
+            }
+
+            // Update the embed data
+            embedData.color = parseInt(color.replace('#', ''), 16);
+            tempEmbedData.set(interaction.user.id, embedData);
+
+            await interaction.editReply({
+                content: `✅ Color successfully set to: ${color}`,
             });
         });
-    });
 
-    // If no matching channels are found
-    if (matchingChannels.length === 0) {
-        return interaction.editReply({
-            content: `❌ No matching channels found for **"${searchQuery}"**. Please try again with different keywords.`,
-            components: []
+        collector.on('end', collected => {
+            if (collected.size === 0) {
+                interaction.editReply({ 
+                    content: '⏰ Color selection timed out. Please try again.',
+                });
+            }
         });
+
+    } catch (error) {
+        console.error('Error:', error);
+        if (!interaction.replied) {
+            await interaction.reply({ 
+                content: '❌ Error processing color selection.',
+                flags: 64 
+            });
+        }
     }
-
-    // Limit to the first 25 matching channels due to Discord's dropdown options limit
-    const options = matchingChannels.slice(0, 25);
-
-    const channelMenu = new StringSelectMenuBuilder()
-        .setCustomId('selectChannels')
-        .setPlaceholder('Select channels to send the embed')
-        .setMinValues(1) // Minimum selection
-        .setMaxValues(options.length) // Allow selecting all displayed options
-        .addOptions(options);
-
-    const channelRow = new ActionRowBuilder().addComponents(channelMenu);
-
-    // Update the interaction with the dropdown menu
-    await interaction.editReply({
-        content: '✅ Select one or more channels from the list below:',
-        components: [channelRow]
-    });
 });
 
-// Step 5: Handle Channel Selection and Send Embed
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectChannels') return;
+// Field Input Handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton() || !interaction.customId.startsWith("embed_set_")) return;
 
-    const selectedChannelIds = interaction.values; // Array of selected channel IDs
-    const embedData = tempEmbedData[interaction.user.id];
+    const userId = interaction.user.id;
+    const fieldType = interaction.customId.split("_")[2];
 
-    if (!embedData || selectedChannelIds.length === 0) {
-        return interaction.update({
-            content: '❌ No embed data or channels selected. Please restart the command.',
-            components: [],
+    try {
+        // Check for active session
+        if (!tempEmbedData.has(userId)) {
+            return await interaction.reply({ 
+                content: "❌ No active embed session found.", 
+                flags: 64
+            });
+        }
+
+        const session = tempEmbedData.get(userId);
+
+        // Determine prompt message based on field type
+        const prompts = {
+            'image': "🖼️ **Please provide an image URL or upload an image**\nSupported formats: PNG, JPG, JPEG, GIF, WEBP",
+            'thumbnail': "🖼️ **Please provide an image URL or upload an image**\nSupported formats: PNG, JPG, JPEG, GIF, WEBP",
+            'titlelink': "🔗 **Please provide the URL for the title:**\nMust be a valid URL starting with http:// or https://",
+            'buttonlabel': "✏️ **Enter the label for your button:**",
+            'buttonurl': "🔗 **Enter the URL for your button:**\nMust be a valid URL starting with http:// or https://",
+            'default': `✏️ **Enter your ${fieldType}:**`
+        };
+
+        await interaction.reply({ 
+            content: prompts[fieldType] || prompts.default, 
+            flags: 64
         });
-    }
 
-    // Build the final embed
-    const embed = new EmbedBuilder()
-        .setDescription(embedData.description)
-        .setColor(embedData.color);
+        // Set up message collector
+        const collector = interaction.channel.createMessageCollector({ 
+            filter: m => m.author.id === userId,
+            time: 60000,
+            max: 1 
+        });
 
-    if (embedData.title) {
-        embed.setTitle(embedData.title);
-        if (embedData.titleLink) {
-            embed.setURL(embedData.titleLink);
+        collector.on('collect', async (message) => {
+            try {
+                // Handle field input based on type
+                if (['image', 'thumbnail'].includes(fieldType)) {
+                    if (message.attachments.size > 0) {
+                        const attachment = message.attachments.first();
+                        if (!isValidImageUrl(attachment.url)) {
+                            return await interaction.editReply({
+                                content: "❌ Invalid image format! Please upload a valid image file (PNG, JPG, JPEG, GIF, WEBP).",
+                            });
+                        }
+                        session[fieldType] = attachment.url;
+                    } else {
+                        const imageUrl = message.content.trim();
+                        if (!isValidImageUrl(imageUrl)) {
+                            return await interaction.editReply({
+                                content: "❌ Invalid image URL! Please provide a valid image URL or upload an image.",
+                            });
+                        }
+                        session[fieldType] = imageUrl;
+                        await message.delete().catch(() => {});
+                    }
+                }
+                else if (fieldType === 'titlelink' || fieldType === 'buttonurl') {
+                    const url = message.content.trim();
+                    if (!isValidUrl(url)) {
+                        return await interaction.editReply({
+                            content: "❌ Invalid URL! Please provide a valid URL starting with http:// or https://",
+                        });
+                    }
+                    session[fieldType === 'titlelink' ? 'titleLink' : 'buttonUrl'] = url;
+                    await message.delete().catch(() => {});
+                }
+                else if (fieldType === 'buttonlabel') {
+                    session.buttonLabel = message.content.trim();
+                    await message.delete().catch(() => {});
+                }
+                else {
+                    session[fieldType] = message.content.trim();
+                    await message.delete().catch(() => {});
+                }
+
+                // Update session and confirm
+                tempEmbedData.set(userId, session);
+                await interaction.editReply({
+                    content: `✅ ${fieldType.charAt(0).toUpperCase() + fieldType.slice(1)} has been updated!`,
+                });
+
+            } catch (error) {
+                console.error('Field Input Error:', error);
+                await interaction.editReply({
+                    content: "❌ An error occurred while processing your input.",
+                });
+            }
+        });
+
+        collector.on('end', collected => {
+            if (collected.size === 0) {
+                interaction.editReply({
+                    content: "⏱️ Time expired. Please try again.",
+                }).catch(console.error);
+            }
+        });
+
+    } catch (error) {
+        console.error('Interaction Error:', error);
+        if (!interaction.replied) {
+            await interaction.reply({ 
+                content: "❌ An error occurred while processing your request.", 
+                flags: 64 
+            });
         }
     }
+});
 
-    if (embedData.thumbnail) {
-        embed.setThumbnail(embedData.thumbnail);
+// Utility function to validate image URLs
+function isValidImageUrl(url) {
+    try {
+        const validExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
+        const urlObj = new URL(url);
+        return validExtensions.some(ext => urlObj.pathname.toLowerCase().endsWith(ext));
+    } catch {
+        return false;
     }
+}
 
-    if (embedData.image) {
-        embed.setImage(embedData.image);
+// Utility function to validate URLs
+function isValidUrl(url) {
+    try {
+        new URL(url);
+        return url.startsWith('http://') || url.startsWith('https://');
+    } catch {
+        return false;
     }
+}
 
-    // If there is a title link, create a button to match
-    const components = [];
-    if (embedData.titleLink) {
-        const linkButton = new ButtonBuilder()
-            .setLabel('🔗 View More') // Button text
-            .setStyle(ButtonStyle.Link) // Link button style
-            .setURL(embedData.titleLink); // Link URL
+// Preview Handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton() || !interaction.customId.startsWith("embed_preview_")) return;
 
-        const buttonRow = new ActionRowBuilder().addComponents(linkButton);
-        components.push(buttonRow);
-    }
-
-    // Send the embed to all selected channels
-    let successfulSends = 0;
-    let failedSends = 0;
-
-    for (const value of selectedChannelIds) {
-        const [guildId, channelId] = value.split(':');
-        const guild = client.guilds.cache.get(guildId);
-        const channel = guild?.channels.cache.get(channelId);
-
-        if (!channel || !channel.isTextBased()) {
-            console.error(`Channel not found or not text-based: ${guildId}:${channelId}`);
-            failedSends++;
-            continue;
+    try {
+        const userId = interaction.user.id;
+        
+        // Check for active session
+        if (!tempEmbedData.has(userId)) {
+            return interaction.reply({ 
+                content: "❌ No active embed session found.", 
+                flags: 64 
+            });
         }
 
+        const embedData = tempEmbedData.get(userId);
+
+        // Validate required fields
+        if (!embedData.title && !embedData.description) {
+            return interaction.reply({
+                content: "❌ You must set either a title or description for the embed!",
+                flags: 64
+            });
+        }
+
+        // Create embed
+        const embed = new EmbedBuilder();
+
+        // Set color
         try {
-            await channel.send({ embeds: [embed], components: components.length ? components : undefined });
-            successfulSends++;
+            embed.setColor(embedData.color || "#00AE86");
         } catch (error) {
-            console.error(`Failed to send embed to ${guild.name} #${channel.name}:`, error);
-            failedSends++;
+            console.error('Color error:', error);
+            embed.setColor("#00AE86"); // Fallback color
+        }
+
+        // Set title if exists
+        if (embedData.title) {
+            try {
+                embed.setTitle(embedData.title);
+                
+                // Set URL if exists and title is set
+                if (embedData.titleLink && isValidUrl(embedData.titleLink)) {
+                    embed.setURL(embedData.titleLink);
+                }
+            } catch (error) {
+                console.error('Title error:', error);
+            }
+        }
+
+        // Set description if exists
+        if (embedData.description) {
+            try {
+                embed.setDescription(embedData.description);
+            } catch (error) {
+                console.error('Description error:', error);
+            }
+        }
+
+        // Set footer if exists
+        if (embedData.footer) {
+            try {
+                embed.setFooter({ text: embedData.footer });
+            } catch (error) {
+                console.error('Footer error:', error);
+            }
+        }
+
+        // Set image if exists
+        if (embedData.image) {
+            try {
+                if (isValidImageUrl(embedData.image)) {
+                    embed.setImage(embedData.image);
+                }
+            } catch (error) {
+                console.error('Image error:', error);
+            }
+        }
+
+        // Set thumbnail if exists
+        if (embedData.thumbnail) {
+            try {
+                if (isValidImageUrl(embedData.thumbnail)) {
+                    embed.setThumbnail(embedData.thumbnail);
+                }
+            } catch (error) {
+                console.error('Thumbnail error:', error);
+            }
+        }
+
+        // Add timestamp
+        embed.setTimestamp();
+
+        // Create preview message
+        const previewMessage = [
+            "👀 **Preview of your embed:**",
+            "",
+            "**Current Settings:**",
+            `• Title: ${embedData.title ? '✅' : '❌'}`,
+            `• Description: ${embedData.description ? '✅' : '❌'}`,
+            `• Color: ${embedData.color ? '✅' : '⚪ (Default)'}`,
+            `• Footer: ${embedData.footer ? '✅' : '❌'}`,
+            `• Image: ${embedData.image ? '✅' : '❌'}`,
+            `• Thumbnail: ${embedData.thumbnail ? '✅' : '❌'}`,
+            `• Title Link: ${embedData.titleLink ? '✅' : '❌'}`,
+            `• Button: ${embedData.buttonLabel && embedData.buttonUrl ? '✅' : '❌'}`
+        ].join('\n');
+
+        // Create buttons
+        const buttons = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`embed_send_${userId}`)
+                    .setLabel('🚀 Send Embed')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId(`embed_back_to_editor_${userId}`)
+                    .setLabel('✏️ Back to Editor')
+                    .setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder()
+                    .setCustomId(`embed_cancel_${userId}`)
+                    .setLabel('❌ Cancel')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+        // Prepare components array
+        const components = [buttons];
+
+        // Add button preview if both label and valid URL exist
+        if (embedData.buttonLabel && embedData.buttonUrl && isValidUrl(embedData.buttonUrl)) {
+            const previewButton = new ButtonBuilder()
+                .setLabel(embedData.buttonLabel)
+                .setURL(embedData.buttonUrl)
+                .setStyle(ButtonStyle.Link);
+
+            const buttonRow = new ActionRowBuilder()
+                .addComponents(previewButton);
+
+            components.unshift(buttonRow); // Add button row before control buttons
+        }
+
+        await interaction.reply({
+            content: previewMessage,
+            embeds: [embed],
+            components: components,
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('Error in preview:', error);
+        
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ 
+                content: "❌ An error occurred while generating the preview.", 
+                flags: 64 
+            });
+        } else {
+            await interaction.editReply({ 
+                content: "❌ An error occurred while generating the preview.", 
+                components: [],
+                flags: 64 
+            });
         }
     }
+});
 
-    delete tempEmbedData[interaction.user.id]; // Clean up temporary data
+// Send Handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton() || !interaction.customId.startsWith("embed_send_")) return;
 
-    // Respond to the user with a summary of the operation
-    await interaction.update({
-        content: `✅ **Embed sent successfully to ${successfulSends} channels.**\n❌ **Failed to send to ${failedSends} channels.**`,
-        components: [],
-    });
+    try {
+        const userId = interaction.user.id;
+        
+        // Check for active session
+        if (!tempEmbedData.has(userId)) {
+            return interaction.reply({ 
+                content: "❌ No active embed session found.", 
+                flags: 64 
+            });
+        }
+
+        const embedData = tempEmbedData.get(userId);
+
+        // Validate channel
+        if (!embedData.selectedChannel) {
+            return interaction.reply({ 
+                content: "❌ No channel selected! Please select a channel first.", 
+                flags: 64 
+            });
+        }
+
+        // Fetch and validate channel
+        const targetChannel = await interaction.client.channels.fetch(embedData.selectedChannel)
+            .catch(() => null);
+
+        if (!targetChannel) {
+            return interaction.reply({ 
+                content: "❌ Selected channel not found or inaccessible!", 
+                flags: 64 
+            });
+        }
+
+        if (!targetChannel.isTextBased()) {
+            return interaction.reply({ 
+                content: "❌ Selected channel must be a text channel!", 
+                flags: 64 
+            });
+        }
+
+        // Check bot permissions in target channel
+        const permissions = targetChannel.permissionsFor(interaction.client.user);
+        if (!permissions.has(['SendMessages', 'ViewChannel', 'EmbedLinks'])) {
+            return interaction.reply({ 
+                content: "❌ Bot doesn't have required permissions in the selected channel!", 
+                flags: 64 
+            });
+        }
+
+        // Validate required fields
+        if (!embedData.title && !embedData.description) {
+            return interaction.reply({
+                content: "❌ You must set either a title or description for the embed!",
+                flags: 64
+            });
+        }
+
+        // Create embed
+        const embed = new EmbedBuilder();
+
+        // Set color
+        try {
+            embed.setColor(embedData.color || "#00AE86");
+        } catch {
+            embed.setColor("#00AE86"); // Fallback color
+        }
+
+        // Set title and URL
+        if (embedData.title) {
+            embed.setTitle(embedData.title);
+            if (embedData.titleLink && isValidUrl(embedData.titleLink)) {
+                embed.setURL(embedData.titleLink);
+            }
+        }
+
+        // Set description
+        if (embedData.description) {
+            embed.setDescription(embedData.description);
+        }
+
+        // Set footer
+        if (embedData.footer) {
+            embed.setFooter({ text: embedData.footer });
+        }
+
+        // Set image
+        if (embedData.image && isValidImageUrl(embedData.image)) {
+            embed.setImage(embedData.image);
+        }
+
+        // Set thumbnail
+        if (embedData.thumbnail && isValidImageUrl(embedData.thumbnail)) {
+            embed.setThumbnail(embedData.thumbnail);
+        }
+
+        // Add timestamp
+        embed.setTimestamp();
+
+        // Prepare message options
+        const messageOptions = { embeds: [embed] };
+
+        // Add button if both label and URL are present
+        if (embedData.buttonLabel && embedData.buttonUrl && isValidUrl(embedData.buttonUrl)) {
+            const button = new ButtonBuilder()
+                .setLabel(embedData.buttonLabel)
+                .setURL(embedData.buttonUrl)
+                .setStyle(ButtonStyle.Link);
+
+            const buttonRow = new ActionRowBuilder()
+                .addComponents(button);
+
+            messageOptions.components = [buttonRow];
+        }
+
+        // Confirmation buttons
+        const confirmButtons = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`embed_confirm_send_${userId}`)
+                    .setLabel('✅ Yes, send it!')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId(`embed_cancel_send_${userId}`)
+                    .setLabel('❌ No, cancel')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+        // Show confirmation dialog
+        await interaction.reply({
+            content: `📢 **Are you sure you want to send this embed to <#${targetChannel.id}>?**\n\n**Preview:**`,
+            embeds: [embed],
+            components: [confirmButtons],
+            flags: 64
+        });
+
+        // Create confirmation collector
+        const filter = i => i.user.id === userId && 
+            (i.customId === `embed_confirm_send_${userId}` || i.customId === `embed_cancel_send_${userId}`);
+        
+        const collector = interaction.channel.createMessageComponentCollector({
+            filter,
+            time: 30000,
+            max: 1
+        });
+
+        collector.on('collect', async (i) => {
+            if (i.customId === `embed_confirm_send_${userId}`) {
+                try {
+                    // Send embed with prepared options
+                    await targetChannel.send(messageOptions);
+                    
+                    // Clear session
+                    tempEmbedData.delete(userId);
+
+                    // Update response
+                    await i.update({
+                        content: `✅ Embed successfully sent to <#${targetChannel.id}>!`,
+                        embeds: [],
+                        components: [],
+                        flags: 64
+                    });
+                } catch (error) {
+                    console.error('Error sending embed:', error);
+                    await i.update({
+                        content: "❌ Failed to send embed. Please try again.",
+                        embeds: [],
+                        components: [],
+                        flags: 64
+                    });
+                }
+            } else {
+                // Handle cancellation
+                await i.update({
+                    content: "❌ Embed send cancelled.",
+                    embeds: [],
+                    components: [],
+                    flags: 64
+                });
+            }
+        });
+
+        collector.on('end', async (collected, reason) => {
+            if (reason === 'time' && collected.size === 0) {
+                await interaction.editReply({
+                    content: "⏱️ Confirmation timed out. Please try again.",
+                    embeds: [],
+                    components: [],
+                    flags: 64
+                });
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in send:', error);
+        if (!interaction.replied) {
+            await interaction.reply({ 
+                content: "❌ An error occurred while processing your request.", 
+                flags: 64 
+            });
+        }
+    }
 });
 
 // Ban Command
@@ -2009,38 +2718,70 @@ client.on('interactionCreate', async (interaction) => {
 async function createTicketChannel(interaction, selectedType, selectedCategory = null) {
     const guild = interaction.guild;
     const user = interaction.user;
+    const botId = interaction.client.user.id;
     const categoryName = selectedCategory ? `Report-${selectedCategory}` : selectedType;
-
-    // Define channel name
     const channelName = `${categoryName}-${user.username}`;
 
     try {
+        // Fetch ALL role IDs for this guild from the database
+        const allRoles = getAllGuildRoles(guild.id);
+
+        const permissionOverwrites = [
+            {
+                id: guild.id, // 🔒 Deny everyone from seeing the channel
+                deny: [PermissionsBitField.Flags.ViewChannel]
+            },
+            {
+                id: user.id, // ✅ Allow the ticket creator to see and send messages
+                allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
+            },
+            {
+                id: botId, // ✅ Allow the bot full access
+                allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ManageChannels]
+            }
+        ];
+
+        // ✅ Add ALL roles from the database (assumed as staff roles)
+        for (const roleId of allRoles) {
+            permissionOverwrites.push({
+                id: roleId,
+                allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
+            });
+        }
+
+        // 🔧 Create the private ticket channel
         const channel = await guild.channels.create({
             name: channelName,
             type: ChannelType.GuildText,
-            permissionOverwrites: [
-                {
-                    id: user.id,
-                    allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
-                }
-            ]
+            permissionOverwrites
         });
 
         await interaction.reply({
-            content: `Ticket created: <#${channel.id}>`,
+            content: `✅ Ticket created: <#${channel.id}> (Only visible to you and staff)`,
             flags: 64
         });
 
         await channel.send({
-            content: `Hello ${user}, please describe your issue or report.`,
+            content: `👋 Hello ${user}, please describe your issue or report. A staff member will assist you shortly.`,
         });
 
     } catch (error) {
-        console.error("Error creating ticket channel:", error);
+        console.error("❌ Error creating ticket channel:", error);
         await interaction.reply({
-            content: "There was an error creating your ticket. Please try again later.",
+            content: "❌ There was an error creating your ticket. Please try again later.",
             flags: 64
         });
+    }
+}
+
+// 📌 Function to Fetch ALL Role IDs for This Guild
+function getAllGuildRoles(guildId) {
+    try {
+        const rows = db.prepare(`SELECT role_id FROM command_roles WHERE guild_id = ?`).all(guildId);
+        return rows.map(row => row.role_id); // Extract only role IDs
+    } catch (error) {
+        console.error("❌ Database Error:", error);
+        return []; // Return an empty array if something goes wrong
     }
 }
 
@@ -2520,88 +3261,103 @@ client.on("interactionCreate", async interaction => {
         await interaction.deferReply();
         await interaction.editReply({ embeds: [battleEmbed] });
 
-         // Start the battle simulation
-        async function battleTurn() {
-            if (hp1 <= 0 || hp2 <= 0) {
-                let winner = hp1 > 0 ? fighter1 : fighter2;
-                let winnerName = hp1 > 0 ? fighter1Name : fighter2Name;
+        // Start the battle simulation
+async function battleTurn() {
+    if (hp1 <= 0 || hp2 <= 0) {
+        let winner = hp1 > 0 ? fighter1 : fighter2;
+        let loser = hp1 > 0 ? fighter2 : fighter1;
+        let winnerName = hp1 > 0 ? fighter1Name : fighter2Name;
+        let loserName = hp1 > 0 ? fighter2Name : fighter1Name;
 
-                // Reward system: Random bolts between 100-500
-                const minBolts = 50;
-                const maxBolts = 20;
-                const reward = Math.floor(Math.random() * (maxBolts - minBolts + 1)) + minBolts;
+        // Reward system: Random bolts between 20-50
+        const minBolts = 20;
+        const maxBolts = 50;
+        const reward = Math.floor(Math.random() * (maxBolts - minBolts + 1)) + minBolts;
 
-                // Update currency balance
-                shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(reward, winner.id);
+        // Update currency balance for the winner
+        shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(reward, winner.id);
 
-                // Get winner's server avatar (fallback to global avatar)
-                const winnerMember = await interaction.guild.members.fetch(winner.id).catch(() => null);
-                const winnerAvatar = winnerMember && winnerMember.avatar
-                    ? winnerMember.displayAvatarURL({ dynamic: true, size: 512 }) // Server avatar
-                    : winner.displayAvatarURL({ dynamic: true, size: 512 }); // Global avatar fallback
+        // Update win/loss records in the database
+        shopDB.prepare(`
+            INSERT INTO deathbattle_stats (user_id, wins, losses)
+            VALUES (?, 1, 0)
+            ON CONFLICT(user_id) DO UPDATE SET wins = wins + 1;
+        `).run(winner.id);
 
-                let finalBlow = `💀 **FINAL BLOW!** ${winnerName} lands a devastating strike and claims victory!`;
+        shopDB.prepare(`
+            INSERT INTO deathbattle_stats (user_id, wins, losses)
+            VALUES (?, 0, 1)
+            ON CONFLICT(user_id) DO UPDATE SET losses = losses + 1;
+        `).run(loser.id);
 
-                battleEmbed
-                    .setColor("#00ff00")
-                    .setTitle("🏆 **VICTORY!** 🏆")
-                    .setDescription(finalBlow)
-                    .addFields(
-                        { name: "👑 Winner:", value: `🎉 **${winnerName}** emerges victorious!` },
-                        { name: "⚙️ Reward:", value: ` **${reward}** Bolts!` }
-                    )
-                    .setThumbnail(winnerAvatar)
-                    .setFooter({ text: "Who will battle next?" })
-                    .setImage ("https://media1.tenor.com/m/_wtKfUXAfLUAAAAd/ratchet-and.gif");
+        // Fetch winner's server avatar (fallback to global avatar)
+        const winnerMember = await interaction.guild.members.fetch(winner.id).catch(() => null);
+        const winnerAvatar = winnerMember && winnerMember.avatar
+            ? winnerMember.displayAvatarURL({ dynamic: true, size: 512 }) // Server avatar
+            : winner.displayAvatarURL({ dynamic: true, size: 512 }); // Global avatar fallback
 
-                return interaction.editReply({ embeds: [battleEmbed] });
-            }
+        let finalBlow = `💀 **FINAL BLOW!** ${winnerName} lands a devastating strike and claims victory!`;
 
-            let attacker = turn === 1 ? fighter1Name : fighter2Name;
-            let defender = turn === 1 ? fighter2Name : fighter1Name;
-            let damage = Math.floor(Math.random() * 20) + 5; // Random damage 5-25
-            let crit = Math.random() < 0.15; // 15% chance for a critical hit
+        battleEmbed
+            .setColor("#00ff00")
+            .setTitle("🏆 **VICTORY!** 🏆")
+            .setDescription(finalBlow)
+            .addFields(
+                { name: "👑 Winner:", value: `🎉 **${winnerName}** emerges victorious!` },
+                { name: "⚙️ Reward:", value: ` **${reward}** Bolts!` },
+                { name: "📊 Record:", value: `**${winnerName}:** 🏆 +1 Win\n**${loserName}:** ❌ +1 Loss` }
+            )
+            .setThumbnail(winnerAvatar)
+            .setFooter({ text: "Who will battle next?" });
 
-            if (crit) {
-                damage *= 2;
-                battleLog.push(`💥 **CRITICAL HIT!** ${attacker} ${attackMoves[Math.floor(Math.random() * attackMoves.length)]} dealing **${damage} HP!**`);
-            } else {
-                battleLog.push(`⚔️ ${attacker} ${attackMoves[Math.floor(Math.random() * attackMoves.length)]} dealing **${damage} HP** to ${defender}!`);
-            }
+        return interaction.editReply({ embeds: [battleEmbed] });
+    }
 
-            if (turn === 1) {
-                hp2 -= damage;
-                turn = 2; // Switch turns
-            } else {
-                hp1 -= damage;
-                turn = 1;
-            }
+    let attacker = turn === 1 ? fighter1Name : fighter2Name;
+    let defender = turn === 1 ? fighter2Name : fighter1Name;
+    let damage = Math.floor(Math.random() * 11) + 5; // Random damage 5-15
+    let crit = Math.random() < 0.05; // 5% chance for a critical hit
 
-            let battleStatus = `🟥 **${fighter1Name}** (${Math.max(hp1, 0)} HP) vs 🟦 **${fighter2Name}** (${Math.max(hp2, 0)} HP)`;
-            let latestLog = battleLog.slice(-5).join("\n") || "*No attacks yet.*"; // Show last 5 logs
+    if (crit) {
+        damage *= 2;
+        battleLog.push(`💥 **CRITICAL HIT!** ${attacker} ${attackMoves[Math.floor(Math.random() * attackMoves.length)]} dealing **${damage} HP!**`);
+    } else {
+        battleLog.push(`⚔️ ${attacker} ${attackMoves[Math.floor(Math.random() * attackMoves.length)]} dealing **${damage} HP** to ${defender}!`);
+    }
 
-            // Update embed with random battle GIF
-            battleEmbed
-                .setTitle("⚔️ **DEATH BATTLE!** ⚔️")
-                .setDescription(`🔥 **${fighter1Name}** vs **${fighter2Name}**`)
-                .setFields(
-                    { name: "💥 Current Health", value: battleStatus },
-                    { name: "⚔️ Battle Log", value: latestLog }
-                )
-                .setImage(battleGifs[Math.floor(Math.random() * battleGifs.length)]) // Randomly pick a new GIF each turn
-                .setFooter({ text: "Next attack incoming..." });
+    if (turn === 1) {
+        hp2 -= damage;
+        turn = 2; // Switch turns
+    } else {
+        hp1 -= damage;
+        turn = 1;
+    }
 
-            await interaction.editReply({ embeds: [battleEmbed] });
+    let battleStatus = `🟥 **${fighter1Name}** (${Math.max(hp1, 0)} HP) vs 🟦 **${fighter2Name}** (${Math.max(hp2, 0)} HP)`;
+    let latestLog = battleLog.slice(-5).join("\n") || "*No attacks yet.*"; // Show last 5 logs
 
-            if (hp1 > 0 && hp2 > 0) {
-                setTimeout(battleTurn, 2000); // Delay for next turn
-            } else {
-                setTimeout(battleTurn, 4000); // Slightly longer delay for final blow
-            }
-        }
+    // Update embed with random battle GIF
+    battleEmbed
+        .setTitle("⚔️ **DEATH BATTLE!** ⚔️")
+        .setDescription(`🔥 **${fighter1Name}** vs **${fighter2Name}**`)
+        .setFields(
+            { name: "💥 Current Health", value: battleStatus },
+            { name: "⚔️ Battle Log", value: latestLog }
+        )
+        .setImage(battleGifs[Math.floor(Math.random() * battleGifs.length)]) // Randomly pick a new GIF each turn
+        .setFooter({ text: "Next attack incoming..." });
 
-        // Start the first turn
-        setTimeout(battleTurn, 3000);
+    await interaction.editReply({ embeds: [battleEmbed] });
+
+    if (hp1 > 0 && hp2 > 0) {
+        setTimeout(battleTurn, 1000); // Delay for next turn
+    } else {
+        setTimeout(battleTurn, 3000); // Slightly longer delay for final blow
+    }
+}
+
+// Start the first turn
+setTimeout(battleTurn, 3000);
     }
 });
 
@@ -2872,7 +3628,7 @@ client.on("interactionCreate", async interaction => {
 client.on("interactionCreate", async interaction => {
     if (!interaction.isStringSelectMenu()) return;
     if (interaction.customId !== "shop_items") return;
-
+    const userId = interaction.user.id;
     const itemId = parseInt(interaction.values[0]);
     const item = shopDB.prepare("SELECT * FROM shop_items WHERE item_id = ?").get(itemId);
     if (!item) {
@@ -2880,9 +3636,10 @@ client.on("interactionCreate", async interaction => {
     }
 
     const confirmButton = new ButtonBuilder()
-        .setCustomId(`confirm_purchase_${itemId}`)
-        .setLabel("Confirm Purchase")
-        .setStyle(ButtonStyle.Success);
+    .setCustomId(`shop_confirm_purchase_${itemId}_${userId}`) // Must include the buyer's ID
+    .setLabel("✅ Confirm Purchase")
+    .setStyle(ButtonStyle.Success);
+
 
     const actionRow = new ActionRowBuilder().addComponents(confirmButton);
 
@@ -2899,36 +3656,86 @@ client.on("interactionCreate", async interaction => {
     });
 });
 
-// Confirm Purchase
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isButton()) return;
-    if (!interaction.customId.startsWith("confirm_purchase_")) return;
+// Handle Purchase Confirmation
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton()) return; // Ensure it's a button interaction
+    if (!interaction.customId) return; // Ensure customId exists
 
-    const itemId = parseInt(interaction.customId.replace("confirm_purchase_", ""));
-    const userId = interaction.user.id;
+    // ✅ Ensure this only applies to shop purchases
+    if (!interaction.customId.startsWith("shop_confirm_purchase_")) return;
+
+    const args = interaction.customId.split("_");
+    if (args.length < 5) {
+        return interaction.reply({ content: "❌ Invalid interaction data.", flags: 64 });
+    }
+
+    const itemId = parseInt(args[3]);
+    const confirmUserId = args[4];
+
+    if (!itemId || !confirmUserId) {
+        return interaction.reply({
+            content: "❌ Invalid interaction data.",
+            flags: 64,
+        });
+    }
+
+    if (interaction.user.id !== confirmUserId) {
+        return interaction.reply({
+            content: "❌ You cannot confirm someone else's purchase!",
+            flags: 64,
+        });
+    }
 
     const item = shopDB.prepare("SELECT * FROM shop_items WHERE item_id = ?").get(itemId);
     if (!item) {
-        return interaction.reply({ content: "❌ This item is no longer available.", flags: 64 });
+        return interaction.update({
+            content: "❌ This item is no longer available.",
+            components: [],
+            flags: 64
+        }).catch(console.error); // Prevent crash if interaction is already replied
     }
 
-    let userData = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?").get(userId);
+    let userData = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?").get(interaction.user.id);
     if (!userData) {
-        shopDB.prepare("INSERT INTO user_currency (user_id, balance) VALUES (?, ?)").run(userId, 0);
+        shopDB.prepare("INSERT INTO user_currency (user_id, balance) VALUES (?, ?)").run(interaction.user.id, 0);
         userData = { balance: 0 };
     }
 
     if (userData.balance < item.price) {
-        return interaction.reply({ content: `❌ Not enough currency!`, flags: 64 });
+        return interaction.update({
+            content: `❌ Not enough currency! You need **${item.price} 💰**.`,
+            components: [],
+            flags: 64
+        }).catch(console.error);
     }
 
-    shopDB.prepare("UPDATE user_currency SET balance = balance - ? WHERE user_id = ?").run(item.price, userId);
-    shopDB.prepare("INSERT INTO user_inventory (user_id, item_id) VALUES (?, ?)").run(userId, itemId);
+    // 🚨 Prevent duplicate purchases
+    const existingItem = shopDB.prepare("SELECT * FROM user_inventory WHERE user_id = ? AND item_id = ?").get(interaction.user.id, itemId);
+    if (existingItem) {
+        return interaction.update({
+            content: "❌ You already own this item!",
+            components: [],
+            flags: 64
+        }).catch(console.error);
+    }
 
-    return interaction.reply({
-        content: `✅ Purchased **${item.name}** for **${item.price} 💰!**`,
-        flags: 64
-    });
+    // ✅ Process purchase
+    try {
+        shopDB.prepare("UPDATE user_currency SET balance = balance - ? WHERE user_id = ?").run(item.price, interaction.user.id);
+        shopDB.prepare("INSERT INTO user_inventory (user_id, item_id) VALUES (?, ?)").run(interaction.user.id, itemId);
+
+        await interaction.update({
+            content: `✅ You successfully purchased **${item.name}** for **${item.price} 💰!**`,
+            components: [],
+        }).catch(console.error);
+    } catch (error) {
+        console.error("Purchase Error:", error);
+        return interaction.update({
+            content: "❌ An error occurred while processing your purchase. Please try again.",
+            components: [],
+            flags: 64
+        }).catch(console.error);
+    }
 });
 
 // additem Command
@@ -3149,7 +3956,7 @@ client.on("interactionCreate", async (interaction) => {
         setTimeout(() => slotCooldowns.delete(userId), 5000);
 
         // Check jackpot win chance
-        checkJackpotWin(userId);
+        checkJackpotWin(userId, interaction.channel);
 
         // Embed result
         const slotEmbed = new EmbedBuilder()
@@ -3241,7 +4048,7 @@ client.on("interactionCreate", async (interaction) => {
     setTimeout(() => spinCooldowns.delete(userId), 5000);
 
     // Check jackpot win chance
-    checkJackpotWin(userId);
+    checkJackpotWin(userId, interaction.channel);
 
     // Embed result
     const rouletteEmbed = new EmbedBuilder()
@@ -3251,6 +4058,166 @@ client.on("interactionCreate", async (interaction) => {
         .setFooter({ text: winnings > 0 ? `You won ⚙️ ${winnings}!` : "Better luck next time!" });
 
     return interaction.reply({ embeds: [rouletteEmbed]});
+});
+
+//bolt crates
+const boltCrateChances = 0.02; // 2% chance per message
+const boltCrates = [
+    { name: "Small Crate", min: 50, max: 200, color: "#C0C0C0" },    // Silver
+    { name: "Medium Crate", min: 200, max: 500, color: "#FFD700" },  // Gold
+    { name: "Large Crate", min: 500, max: 1000, color: "#FF0000" }   // Red
+];
+
+client.on("messageCreate", async (message) => {
+    if (message.author.bot) return; // Ignore bot messages
+
+    if (Math.random() < boltCrateChances) {
+        const crate = boltCrates[Math.floor(Math.random() * boltCrates.length)];
+        const bolts = Math.floor(Math.random() * (crate.max - crate.min + 1)) + crate.min;
+
+        const embed = new EmbedBuilder()
+            .setTitle("A Bolt Crate Appeared!")
+            .setDescription(`Click the button below to claim the **${crate.name}** and receive bolts!`)
+            .addFields({ name: "🔧 Possible Reward:", value: ` **${crate.min} - ${crate.max}** Bolts` })
+            .setColor(crate.color) // Now uses the color specific to the crate rarity
+            .setThumbnail("https://static.wikia.nocookie.net/ratchet/images/0/0e/Bolt_crate_from_R%26C_%282002%29_render.png") // Replace with actual image URL
+
+        const button = new ButtonBuilder()
+            .setCustomId(`claim_bolt_crate_${bolts}`)
+            .setLabel("🔧 Claim Crate")
+            .setStyle(ButtonStyle.Success);
+
+        const actionRow = new ActionRowBuilder().addComponents(button);
+
+        await message.channel.send({
+            embeds: [embed],
+            components: [actionRow]
+        });
+    }
+});
+
+
+// Handle Bolt Crate Claim
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton() || !interaction.customId.startsWith("claim_bolt_crate_")) return;
+
+    const bolts = parseInt(interaction.customId.split("_")[3]);
+    const userId = interaction.user.id;
+
+    shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?")
+        .run(bolts, userId);
+
+    const embed = new EmbedBuilder()
+        .setTitle("✅ Bolt Crate Claimed!")
+        .setDescription(`**${interaction.user.username}** has claimed the crate and received **${bolts} bolts**!`)
+        .setColor("#00FF00")
+        .setThumbnail("https://static.wikia.nocookie.net/ratchet/images/0/0e/Bolt_crate_from_R%26C_%282002%29_render.png"); // Replace with actual image URL
+
+    await interaction.update({
+        embeds: [embed],
+        components: []
+    });
+});
+
+const mysteryCrateChances = 0.005; // .5% chance per message
+const mysteryCrates = {
+    common: {
+        name: "Common Mystery Crate",
+        color: "#AAAAAA",
+        image: "https://static.wikia.nocookie.net/ratchet/images/5/53/Ammo_crate_from_UYA_render.png",
+        boltReward: [50, 150], // Min-Max bolts
+        priceRange: [0, 500] // Items worth up to 500 bolts
+    },
+    rare: {
+        name: "Rare Mystery Crate",
+        color: "#1E90FF",
+        image: "https://static.wikia.nocookie.net/ratchet/images/5/53/Ammo_crate_from_UYA_render.png",
+        boltReward: [200, 500],
+        priceRange: [500, 1500]
+    },
+    legendary: {
+        name: "Legendary Mystery Crate",
+        color: "#FFD700",
+        image: "https://static.wikia.nocookie.net/ratchet/images/5/53/Ammo_crate_from_UYA_render.png",
+        boltReward: [1000, 2500],
+        priceRange: [1500, Infinity]
+    }
+};
+
+client.on("messageCreate", async (message) => {
+    if (message.author.bot) return; // Ignore bot messages
+
+    if (Math.random() < mysteryCrateChances) {
+        const rarity = ["common", "rare", "legendary"][Math.floor(Math.random() * 3)];
+        const crate = mysteryCrates[rarity];
+
+        const embed = new EmbedBuilder()
+            .setTitle(`🌀 A ${crate.name} Appeared!`)
+            .setDescription(`Click the button below to **open the crate** and claim your reward!`)
+            .setColor(crate.color)
+            .setThumbnail(crate.image);
+
+        const button = new ButtonBuilder()
+            .setCustomId(`open_mystery_crate_${rarity}`)
+            .setLabel("Open Crate")
+            .setStyle(ButtonStyle.Primary);
+
+        const actionRow = new ActionRowBuilder().addComponents(button);
+
+        await message.channel.send({
+            embeds: [embed],
+            components: [actionRow]
+        });
+    }
+});
+
+// Handle Mystery Crate Opening
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton() || !interaction.customId.startsWith("open_mystery_crate_")) return;
+
+    const rarity = interaction.customId.split("_")[3];
+    const userId = interaction.user.id;
+    const crate = mysteryCrates[rarity];
+
+    let reward;
+    if (Math.random() < 0.5) { // 50% chance for bolts, 50% for an item
+        // 🎉 Bolt Reward
+        const bolts = Math.floor(Math.random() * (crate.boltReward[1] - crate.boltReward[0] + 1)) + crate.boltReward[0];
+        shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(bolts, userId);
+        reward = ` **${bolts} bolts**`;
+    } else {
+        //  Item Reward
+        const items = shopDB.prepare("SELECT item_id, name FROM shop_items WHERE price BETWEEN ? AND ?").all(crate.priceRange[0], crate.priceRange[1]);
+
+        if (items.length > 0) {
+            const item = items[Math.floor(Math.random() * items.length)];
+
+            //  Check if user already owns the item
+            const existingItem = shopDB.prepare("SELECT * FROM user_inventory WHERE user_id = ? AND item_id = ?").get(userId, item.item_id);
+
+            if (existingItem) {
+                reward = `🔄 **Duplicate item detected!** You already own **${item.name}**.\nYou received **${crate.boltReward[0]} bolts instead!**`;
+                shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(crate.boltReward[0], userId);
+            } else {
+                shopDB.prepare("INSERT INTO user_inventory (user_id, item_id) VALUES (?, ?)").run(userId, item.item_id);
+                reward = ` **${item.name}**`;
+            }
+        } else {
+            reward = ` **${crate.boltReward[0]} bolts** (No items available in this price range)`;
+            shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(crate.boltReward[0], userId);
+        }
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle(`🎉 ${interaction.user.username} Opened a ${crate.name}!`)
+        .setDescription(`They received **${reward}**!`)
+        .setColor(crate.color)
+        .setThumbnail(crate.image);
+
+    await interaction.update({
+        embeds: [embed],
+        components: []
+    });
 });
 
 // Add lost bets to the jackpot pool
@@ -3271,13 +4238,18 @@ function checkJackpotWin(userId) {
 }
 
 // Announce jackpot win and give winnings
-function announceJackpotWin(userId, amount) {
+async function announceJackpotWin(userId, amount, channel) {
+    // Update user's balance
     shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(amount, userId);
     
-    const user = client.users.cache.get(userId);
-    if (user) {
-        user.send(`🎉 Congratulations! You won the jackpot of **⚙️ ${amount}** bolts! 🎰`);
+    // Send announcement in channel
+    if (channel) {
+        await channel.send({
+            content: `🎉 Congratulations <@${userId}>! You won the jackpot of **⚙️ ${amount}** bolts! 🎰`,
+            allowedMentions: { users: [userId] }
+        }).catch(console.error);
     }
+    
     console.log(`🎊 Jackpot won by ${userId}: ⚙️ ${amount}`);
 }
 
@@ -3312,7 +4284,7 @@ client.on('messageCreate', (message) => {
     }
 
     // XP gain logic: Generate random XP gain between 1 and 5
-    const xpGain = parseFloat((Math.random() * (5 - 1) + 1).toFixed(2));
+    const xpGain = parseFloat((Math.random() * (20 - 5) + 5).toFixed(2));
 
     // Update or insert XP for the user
     db.prepare(`
@@ -3378,6 +4350,159 @@ const member = message.guild.members.cache.get(userId);
     }
 }
 
+});
+
+// Leaderboard
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "tgc-xpleaderboard") {
+        await interaction.deferReply(); // Prevents timeout while fetching usernames
+
+        const perPage = 10;
+        const totalUsers = db.prepare(`SELECT COUNT(*) AS count FROM user_xp`).get().count;
+        const totalPages = Math.ceil(totalUsers / perPage);
+
+        let page = 0;
+        const getLeaderboardPage = (page) => {
+            return db.prepare(`
+                SELECT user_id, xp 
+                FROM user_xp 
+                ORDER BY xp DESC 
+                LIMIT ? OFFSET ?
+            `).all(perPage, page * perPage);
+        };
+
+        let leaderboardData = getLeaderboardPage(page);
+        if (leaderboardData.length === 0) {
+            return interaction.editReply({ content: "📉 No XP data found!", flags: 64 });
+        }
+
+        const generateEmbed = async (page) => {
+            const leaderboardEmbed = new EmbedBuilder()
+                .setColor("#FFD700")
+                .setTitle("🏆 XP Leaderboard")
+                .setDescription(`Top users with the highest XP (Page **${page + 1}** of **${totalPages}**)`)
+                .setTimestamp()
+                .setFooter({ text: `Page ${page + 1} of ${totalPages}` });
+
+            // Fetch user info and add fields to the embed
+            for (const [index, user] of leaderboardData.entries()) {
+                let displayName;
+                try {
+                    const member = await interaction.guild.members.fetch(user.user_id);
+                    displayName = member ? member.displayName : `Unknown Member (${user.user_id})`;
+                } catch (err) {
+                    console.error(`Error fetching guild member ${user.user_id}:`, err);
+                    displayName = `Unknown Member (${user.user_id})`;
+                }
+
+                leaderboardEmbed.addFields({
+                    name: `#${page * perPage + index + 1} - **${displayName}**`,
+                    value: `⭐ XP: **${Math.floor(user.xp)}**`,
+                    inline: false
+                });
+            }
+
+            return leaderboardEmbed;
+        };
+
+        const prevButton = new ButtonBuilder()
+            .setCustomId("prev_leaderboard")
+            .setLabel("◀️ Previous")
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(page === 0);
+
+        const nextButton = new ButtonBuilder()
+            .setCustomId("next_leaderboard")
+            .setLabel("Next ▶️")
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(page === totalPages - 1);
+
+        const row = new ActionRowBuilder().addComponents(prevButton, nextButton);
+
+        const replyMessage = await interaction.editReply({
+            embeds: [await generateEmbed(page)],
+            components: [row]
+        });
+
+        // Collector for pagination
+        const collector = replyMessage.createMessageComponentCollector({
+            filter: (i) => i.user.id === interaction.user.id,
+            time: 60000
+        });
+
+        collector.on("collect", async (i) => {
+            if (i.customId === "prev_leaderboard" && page > 0) {
+                page--;
+            } else if (i.customId === "next_leaderboard" && page < totalPages - 1) {
+                page++;
+            }
+
+            leaderboardData = getLeaderboardPage(page);
+
+            prevButton.setDisabled(page === 0);
+            nextButton.setDisabled(page === totalPages - 1);
+
+            await i.update({ embeds: [await generateEmbed(page)], components: [row] });
+        });
+
+        collector.on("end", async () => {
+            prevButton.setDisabled(true);
+            nextButton.setDisabled(true);
+            await interaction.editReply({ components: [row] });
+        });
+    }
+});
+
+// Battle Leaderboard
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "tgc-battleleaderboard") {
+        await interaction.deferReply(); // Prevents timeout while fetching user data
+
+        // Fetch top 10 players sorted by most wins
+        const topBattlers = shopDB.prepare(`
+            SELECT user_id, wins, losses 
+            FROM deathbattle_stats 
+            ORDER BY wins DESC 
+            LIMIT 10
+        `).all() || [];
+
+        // Ensure data exists
+        if (!topBattlers.length) {
+            return interaction.editReply({ content: "📉 No battle data found!", flags: 64 });
+        }
+
+        // Create embed
+        const battleEmbed = new EmbedBuilder()
+            .setColor("#FF4500")
+            .setTitle("⚔️ Death Battle Leaderboard")
+            .setDescription("Top 10 users with the most wins in Death Battle")
+            .setTimestamp();
+
+        // Fetch user info and add fields to the embed
+        for (const [index, user] of topBattlers.entries()) {
+            let displayName;
+            try {
+                const member = await interaction.guild.members.fetch(user.user_id);
+                displayName = member ? member.displayName : `Unknown Member (${user.user_id})`;
+            } catch (err) {
+                console.error(`Error fetching guild member ${user.user_id}:`, err);
+                displayName = `Unknown Member (${user.user_id})`;
+            }
+
+            battleEmbed.addFields({
+                name: `#${index + 1} - **${displayName}**`,
+                value: `🏆 Wins: **${user.wins}** | 💀 Losses: **${user.losses}**`,
+                inline: false
+            });
+        }
+
+        // Send leaderboard embed
+        await interaction.editReply({ embeds: [battleEmbed] });
+    }
 });
 
 // Bot Ready
