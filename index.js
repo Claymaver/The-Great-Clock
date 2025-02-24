@@ -1,4 +1,4 @@
-const {Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,ButtonBuilder,ButtonStyle,ChannelType, PermissionsBitField,StringSelectMenuOptionBuilder } = require('discord.js');require('dotenv').config();
+const {Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder, PermissionFlagsBits,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,ButtonBuilder,ButtonStyle,ChannelType, PermissionsBitField, ActivityType, Events } = require('discord.js');require('dotenv').config();
 
     const client = new Client({
         intents: [
@@ -6,11 +6,13 @@ const {Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder,EmbedBuilder,Mod
             GatewayIntentBits.GuildMembers,
             GatewayIntentBits.GuildMessages,
             GatewayIntentBits.MessageContent,
+            GatewayIntentBits.GuildModeration,
         ],
     });
 
 const Database = require('better-sqlite3');
-const { channel } = require('diagnostics_channel');
+const fs = require('fs');
+const path = require('path');
 
 // Initialize Database
 const db = new Database('leveling.db', { verbose: console.log }); 
@@ -37,22 +39,22 @@ db.exec(`
         user_id TEXT PRIMARY KEY,
         reason TEXT NOT NULL DEFAULT 'No reason provided',
         expires_at INTEGER -- NULL for permanent bans
-    );
+);
     CREATE TABLE IF NOT EXISTS command_roles (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
-        command_name TEXT NOT NULL,
-        role_id TEXT NOT NULL
-    );
+        role_id TEXT NOT NULL,
+        UNIQUE(guild_id, role_id)
+);
     CREATE TABLE IF NOT EXISTS channel_links (
         source_channel_id TEXT PRIMARY KEY,
         target_channel_id TEXT NOT NULL,
         embed_color TEXT DEFAULT '00AE86'
-    );
+);
     CREATE TABLE IF NOT EXISTS autopublish_channels (
     channel_id TEXT PRIMARY KEY,
     enabled BOOLEAN DEFAULT 1
-    );
+);
     CREATE TABLE IF NOT EXISTS global_timeouts (
     user_id TEXT PRIMARY KEY,
     expires_at INTEGER,
@@ -61,7 +63,11 @@ db.exec(`
     CREATE TABLE IF NOT EXISTS quotes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         text TEXT NOT NULL
-    );
+);
+CREATE TABLE IF NOT EXISTS new_user_alerts (
+    guild_id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL
+);
 `);
 
 // Initialize Shop Database
@@ -100,32 +106,38 @@ shopDB.exec(`
 `);
 
 function checkCommandPermission(interaction) {
-    if (!interaction.guild) return false;
+    // Return true if user is an administrator
+    if (interaction.member.permissions.has("Administrator")) {
+        return true;
+    }
 
-    const guildId = interaction.guild.id;
-    const memberRoles = interaction.member.roles.cache.map((role) => role.id);
-
-    // Fetch allowed roles for the guild
-    const allowedRoles = db.prepare(`
-        SELECT role_id FROM command_roles WHERE guild_id = ?
-    `).all(guildId);
-
-    if (allowedRoles.length === 0) {
-        // If no roles are set for the guild, assume all commands are restricted
+    // Return false if not in a guild or if member/roles are undefined
+    if (!interaction.guild || !interaction.member || !interaction.member.roles) {
         return false;
     }
 
-    // Check if any of the member's roles match the allowed roles
-    const allowedRoleIds = allowedRoles.map((row) => row.role_id);
-    return memberRoles.some((roleId) => allowedRoleIds.includes(roleId));
-}
+    const guildId = interaction.guild.id;
+    const memberRoles = interaction.member.roles.cache.map(role => role.id);
 
-// Ensure schema is updated
-try {
-    db.prepare(`SELECT multiplier FROM guild_settings LIMIT 1`).get();
+    try {
+        // Fetch allowed roles for the guild
+        const allowedRoles = db.prepare(`
+            SELECT role_id FROM command_roles WHERE guild_id = ?
+        `).all(guildId);
+
+        // If no roles are set for the guild, assume all commands are restricted
+        if (allowedRoles.length === 0) {
+            return false;
+        }
+
+        // Check if the member has any of the allowed roles
+        const allowedRoleIds = allowedRoles.map(row => row.role_id);
+        return memberRoles.some(roleId => allowedRoleIds.includes(roleId));
+
     } catch (error) {
-        console.log("Updating schema: Adding 'multiplier' column to 'guild_settings'.");
-        db.exec(`ALTER TABLE guild_settings ADD COLUMN multiplier REAL DEFAULT 1.2`);
+        console.error('Error checking command permissions:', error);
+        return false; // Return false on error to be safe
+    }
 }
 
 const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -165,40 +177,6 @@ function calculateTotalXpForLevel(level, baseXp, multiplier) {
     }
 
     return totalXp;
-}
-
-// Function to apply a global ban across all guilds
-async function applyGlobalBan(client, userId, reason) {
-    const guilds = client.guilds.cache;
-
-    if (!guilds.size) {
-        console.log("No guilds available to ban the user.");
-        return;
-    }
-
-    for (const guild of guilds.values()) {
-        try {
-            const member = await guild.members.fetch(userId).catch(() => null);
-
-            if (member) {
-                await guild.bans.create(userId, { reason });
-                console.log(`User banned in guild: ${guild.name}`);
-            } else {
-                console.log(`User not found in guild: ${guild.name}`);
-            }
-        } catch (error) {
-            console.error(`Error banning user in guild: ${guild.name}`, error);
-        }
-    }
-}
-
-// Function to generate progress bar
-function generateProgressBar(currentXp, xpForNextLevel, barLength = 20) {
-    const progress = Math.max(0, Math.min(currentXp / xpForNextLevel, 1)); // Ensure progress is between 0 and 1
-    const filledLength = Math.floor(progress * barLength);
-    const emptyLength = barLength - filledLength;
-
-    return '█'.repeat(filledLength) + '░'.repeat(emptyLength); // Create the progress bar
 }
 
 // Max Listeners for interactions
@@ -277,20 +255,38 @@ const commands = [
         // ===============================
         // 🔧 Moderation & Management Commands
         // ===============================
-        new SlashCommandBuilder()
-            .setName("tgc-ban")
-            .setDescription("Globally ban a user.")
-            .addUserOption(option =>
-                option.setName("user")
-                    .setDescription("The user to ban.")
-                    .setRequired(true))
-            .addStringOption(option =>
-                option.setName("reason")
-                    .setDescription("Reason for the ban.")
-                    .setRequired(false))
-            .addIntegerOption(option =>
-                option.setName("duration")
-                    .setDescription("Ban duration in hours (optional).")),
+new SlashCommandBuilder()
+    .setName("tgc-ban")
+    .setDescription("Globally ban a user.")
+    .addUserOption(option =>
+        option.setName("user")
+            .setDescription("The user to ban.")
+            .setRequired(true))
+    .addStringOption(option =>
+        option.setName("reason")
+            .setDescription("Reason for the ban.")
+            .setRequired(false))
+    .addIntegerOption(option =>
+        option.setName("days")
+            .setDescription("Number of days for the ban duration.")
+            .setMinValue(0)
+            .setRequired(false))
+    .addIntegerOption(option =>
+        option.setName("hours")
+            .setDescription("Number of hours for the ban duration.")
+            .setMinValue(0)
+            .setRequired(false))
+    .addIntegerOption(option =>
+        option.setName("minutes")
+            .setDescription("Number of minutes for the ban duration.")
+            .setMinValue(0)
+            .setRequired(false))
+    .addIntegerOption(option =>
+        option.setName("delete_messages")
+            .setDescription("Delete messages from the last X days (0-14).")
+            .setMinValue(0)
+            .setMaxValue(14)
+            .setRequired(false)),
     
         new SlashCommandBuilder()
             .setName("tgc-kick")
@@ -310,8 +306,13 @@ const commands = [
     
         new SlashCommandBuilder()
             .setName("tgc-unban")
-            .setDescription("Unban users."),
-    
+            .setDescription("Search and unban users.")
+            .addStringOption(option =>
+                option.setName("search")
+                    .setDescription("Search by username or ID")
+                    .setRequired(true)
+            ),
+
         new SlashCommandBuilder()
             .setName("tgc-timeout")
             .setDescription("Timeout a user across all servers.")
@@ -335,7 +336,38 @@ const commands = [
                 option.setName("channel")
                     .setDescription("The channel to lock/unlock.")
                     .setRequired(true)),
-    
+        new SlashCommandBuilder()
+            .setName('tgc-managecommandroles')
+            .setDescription('Manage roles that can use TGC commands')
+            .addStringOption(option =>
+                option.setName('action')
+                    .setDescription('Choose whether to add or remove a role')
+                    .setRequired(true)
+                    .addChoices(
+                        { name: 'Add Role', value: 'add' },
+                        { name: 'Remove Role', value: 'remove' }
+                    )
+            )
+            .addRoleOption(option =>
+                option.setName('role')
+                    .setDescription('The role to add or remove')
+                    .setRequired(true)
+            )
+            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+           
+            new SlashCommandBuilder()
+    .setName("purge")
+    .setDescription("Delete all messages from a user in the server.")
+    .addUserOption(option => 
+        option.setName("user")
+        .setDescription("The user whose messages will be deleted")
+        .setRequired(true))
+    .addChannelOption(option =>
+        option.setName("channel")
+        .setDescription("The channel to purge messages from (optional)")
+        .setRequired(false)),
+
+
         // ===============================
         // 📩 Message Management Commands
         // ===============================
@@ -362,6 +394,14 @@ const commands = [
                 .addChannelOption(option =>
                     option.setName('channel')
                         .setDescription('Select the log channel')
+                        .setRequired(true)
+                ),
+        new SlashCommandBuilder()
+                .setName('tgc-setalertchannel')
+                .setDescription('Sets the channel for new user alerts')
+                .addChannelOption(option =>
+                    option.setName('channel')
+                        .setDescription('The channel to send new user alerts to')
                         .setRequired(true)
                 ),
         // ===============================
@@ -1009,7 +1049,6 @@ function createEmbedSession(userId) {
     });
 }
 
-
 // Cleanup function to remove old sessions
 function cleanupSessions() {
     const now = Date.now();
@@ -1226,7 +1265,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!tempEmbedData.has(userId)) {
             return interaction.reply({ 
                 content: "❌ No active embed session found.", 
-                ephemeral: true 
+                flags: 64 
             });
         }
 
@@ -1239,7 +1278,7 @@ client.on("interactionCreate", async (interaction) => {
             return interaction.update({ 
                 content: "❌ Selected channel not found!", 
                 components: [],
-                ephemeral: true 
+                flags: 64 
             });
         }
 
@@ -1248,7 +1287,7 @@ client.on("interactionCreate", async (interaction) => {
             return interaction.update({
                 content: "❌ Selected channel must be a text channel!",
                 components: [],
-                ephemeral: true
+                flags: 64
             });
         }
 
@@ -1258,7 +1297,7 @@ client.on("interactionCreate", async (interaction) => {
             return interaction.update({ 
                 content: "❌ Bot doesn't have required permissions in this channel!", 
                 components: [],
-                ephemeral: true 
+                flags: 64 
             });
         }
 
@@ -1344,7 +1383,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.update({
             content,
             components: [editButtons, imageButtons, buttonSettingsRow, actionButtons],
-            ephemeral: true
+            flags: 64
         });  
 
     } catch (error) {
@@ -1355,13 +1394,13 @@ client.on("interactionCreate", async (interaction) => {
         if (!interaction.replied && !interaction.deferred) {
             await interaction.reply({ 
                 content: errorMessage, 
-                ephemeral: true 
+                flags: 64 
             }).catch(console.error);
         } else {
             await interaction.editReply({ 
                 content: errorMessage, 
                 components: [],
-                ephemeral: true 
+                flags: 64 
             }).catch(console.error);
         }
     }
@@ -1959,85 +1998,459 @@ client.on("interactionCreate", async (interaction) => {
     }
 });
 
-// Ban Command
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-ban") return;
-
-    const guildId = interaction.guild?.id;
-
-    // Ensure the command is being used in a guild
-    if (!guildId) {
-        return interaction.reply({
-            content: 'This command can only be used in a server.',
-            flags: 64
-        });
-    }
-
-    // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
-    }
-
-    ensureGuildSettings(guildId);
-
-    const target = interaction.options.getUser("user");
-    const reason = interaction.options.getString("reason") || "No reason provided.";
-    const duration = interaction.options.getInteger("duration"); // in days
-
-    if (!target) {
-        return interaction.reply({
-            content: "Please specify a user to ban.",
-            flags: 64
-        });
-    }
-
-    try {
-        // Calculate expiration time if a duration is specified
-        const expiresAt = duration ? Date.now() + duration * 24 * 60 * 60 * 1000 : null;
-
-        // Check if the user is already banned in the database
-        const existingBan = db.prepare('SELECT * FROM global_bans WHERE user_id = ?').get(target.id);
-
-        if (existingBan) {
-            return interaction.reply({
-                content: `${target.tag} is already globally banned.`,
-                flags: 64
+// Purge
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isCommand()) return;
+  
+    if (interaction.commandName === "purge") {
+        if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+            return interaction.reply({ 
+                content: "❌ You need `Manage Messages` permission!", 
+                flags: 64 
             });
         }
+  
+        const user = interaction.options.getUser("user");
+        const specificChannel = interaction.options.getChannel("channel");
+        
+        if (!user) return interaction.reply({ 
+            content: "❌ You must mention a user!", 
+            flags: 64 
+        });
 
-        // Store the ban in the database
-        db.prepare(`
-            INSERT INTO global_bans (user_id, reason, expires_at)
-            VALUES (?, ?, ?)
-        `).run(target.id, reason, expiresAt);
+        await interaction.deferReply({ flags: 64 });
+        
+        let stats = {
+            totalDeleted: 0,
+            recentDeleted: 0,
+            oldDeleted: 0,
+            errors: 0,
+            processedChannels: 0
+        };
+        let oldMessages = [];
+        let logData = [];
+        let lastProgressUpdate = Date.now();
+        const progressUpdateInterval = 5000; // 5 seconds
 
-        // Apply the global ban across all servers
-        const results = [];
-        for (const [guildId, guild] of client.guilds.cache) {
+        async function updateProgress(interaction, stats, isInitial = false) {
+            if (Date.now() - lastProgressUpdate < progressUpdateInterval && !isInitial) return;
+            
+            const content = [
+                `🔍 Scanning messages...`,
+                `📊 Current Progress:`,
+                `✨ Recent messages deleted: **${stats.recentDeleted}**`,
+                `📚 Older messages found: **${oldMessages.length}**`,
+                `🔄 Channels processed: **${stats.processedChannels}**`,
+                `⚠️ Errors encountered: **${stats.errors}**`
+            ].join('\n');
+
             try {
-                await guild.members.ban(target.id, { reason });
-                results.push(`✅ Banned in **${guild.name}**`);
+                await interaction.editReply({ content, flags: 64 });
+                lastProgressUpdate = Date.now();
             } catch (error) {
-                console.error(`Failed to ban in guild ${guild.name}:`, error);
-                results.push(`❌ Failed to ban in **${guild.name}**`);
+                console.error('Failed to update progress:', error);
             }
         }
 
-        // Respond with ban confirmation and affected servers
-        interaction.reply({
-            content: `**${target.tag}** has been globally banned.${duration ? ` Ban duration: ${duration} days.` : ""}\n\n${results.join("\n")}`,
+        async function processChannel(channel) {
+            if (!channel.isTextBased()) return;
+
+            try {
+                let lastId = null;
+                let messageCount = 0;
+                const twoWeeksAgo = Date.now() - (14 * 24 * 60 * 60 * 1000);
+                
+                while (true) {
+                    const messages = await channel.messages.fetch({ 
+                        limit: 100, 
+                        before: lastId 
+                    });
+                    
+                    if (messages.size === 0) break;
+                    lastId = messages.last().id;
+                    messageCount += messages.size;
+
+                    const userMessages = messages.filter(m => m.author.id === user.id);
+                    
+                    if (userMessages.size > 0) {
+                        const recentMessages = userMessages.filter(m => m.createdTimestamp > twoWeeksAgo);
+                        const olderMessages = userMessages.filter(m => m.createdTimestamp <= twoWeeksAgo);
+
+                        // Log messages
+                        userMessages.forEach(m => {
+                            logData.push(`[${new Date(m.createdTimestamp).toISOString()}] [#${channel.name}] ${m.author.tag}: ${m.content || "(Embed/Attachment)"}\n`);
+                        });
+
+                        // Handle recent messages
+                        if (recentMessages.size > 0) {
+                            try {
+                                await channel.bulkDelete(recentMessages, true);
+                                stats.recentDeleted += recentMessages.size;
+                                stats.totalDeleted += recentMessages.size;
+                                await updateProgress(interaction, stats);
+                            } catch (error) {
+                                console.error(`Bulk delete error in ${channel.name}:`, error);
+                                stats.errors++;
+                            }
+                        }
+
+                        // Queue older messages
+                        if (olderMessages.size > 0) {
+                            oldMessages.push(...olderMessages.map(m => ({
+                                id: m.id,
+                                channelId: channel.id,
+                                content: m.content || "(Embed/Attachment)"
+                            })));
+                        }
+                    }
+
+                    if (messageCount >= 10000 || (messageCount >= 1000 && userMessages.size === 0)) {
+                        break;
+                    }
+                }
+
+                stats.processedChannels++;
+                await updateProgress(interaction, stats);
+
+            } catch (error) {
+                console.error(`Error in ${channel.name}:`, error);
+                stats.errors++;
+                await interaction.followUp({
+                    content: `⚠️ Error in #${channel.name}: ${error.message}`,
+                    flags: 64
+                });
+            }
+        }
+
+        try {
+            // Initial progress message
+            await updateProgress(interaction, stats, true);
+
+            // Process channels
+            if (specificChannel) {
+                await processChannel(specificChannel);
+            } else {
+                const textChannels = interaction.guild.channels.cache.filter(c => c.isTextBased());
+                for (const channel of textChannels.values()) {
+                    await processChannel(channel);
+                }
+            }
+
+            // Handle older messages
+            if (oldMessages.length > 0) {
+                await interaction.followUp({
+                    content: `⏳ Processing ${oldMessages.length} older messages...`,
+                    flags: 64
+                });
+                const oldMessageStats = await deleteOldMessagesWithRateLimit(interaction, oldMessages, user.tag);
+                stats.oldDeleted = oldMessageStats.deleted;
+                stats.totalDeleted += oldMessageStats.deleted;
+                stats.errors += oldMessageStats.errors;
+            }
+
+            // Save logs
+            if (logData.length > 0) {
+                await saveLogToFile(user.id, user.tag, logData, interaction);
+            }
+
+            // Final report
+            const channelInfo = specificChannel ? ` in #${specificChannel.name}` : " across all channels";
+            const finalReport = [
+                `✅ Purge Complete!`,
+                ``,
+                `📊 Final Statistics:`,
+                `✨ Recent messages deleted: **${stats.recentDeleted}**`,
+                `📚 Older messages deleted: **${stats.oldDeleted}**`,
+                `📝 Total messages deleted: **${stats.totalDeleted}**`,
+                `🔄 Channels processed: **${stats.processedChannels}**`,
+                `⚠️ Errors encountered: **${stats.errors}**`,
+                ``,
+                `🎯 Target: ${user.tag}${channelInfo}`
+            ].join('\n');
+
+            await interaction.editReply({
+                content: finalReport,
+                flags: 64
+            });
+
+        } catch (error) {
+            console.error('Purge command error:', error);
+            await interaction.editReply({
+                content: '❌ An error occurred while processing the purge command.',
+                flags: 64
+            });
+        }
+    }
+});
+
+// Function to save log to file
+async function saveLogToFile(userId, userTag, logData, interaction) {
+    try {
+        // Create logs directory if it doesn't exist
+        const logDir = path.join(__dirname, "logs");
+        await fs.promises.mkdir(logDir, { recursive: true });
+
+        // Clean up filenames and create paths
+        const cleanUsername = userTag.replace(/[^a-z0-9]/gi, '_').slice(0, 32);
+        const serverName = interaction.guild.name.replace(/[^a-z0-9]/gi, '_').slice(0, 32);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const fileName = `${serverName}_${cleanUsername}_${timestamp}.txt`;
+        const filePath = path.join(logDir, fileName);
+
+        // Create detailed log header
+        const logHeader = [
+            `=== Message Purge Log ===`,
+            ``,
+            `Server Information:`,
+            `  Name: ${interaction.guild.name}`,
+            `  ID: ${interaction.guild.id}`,
+            ``,
+            `Target User Information:`,
+            `  Username: ${userTag}`,
+            `  ID: ${userId}`,
+            ``,
+            `Purge Information:`,
+            `  Executed by: ${interaction.user.tag} (${interaction.user.id})`,
+            `  Date: ${new Date().toLocaleString()}`,
+            `  Total Messages: ${logData.length}`,
+            ``,
+            `=== Messages ===`,
+            ``
+        ].join('\n');
+
+        // Format log content with message count
+        const formattedLogData = logData.map((entry, index) => 
+            `[${index + 1}] ${entry}`
+        ).join('');
+
+        const logContent = logHeader + formattedLogData;
+
+        // Write file with error handling
+        await fs.promises.writeFile(filePath, logContent, 'utf8');
+        console.log(`📂 Log file created: ${filePath}`);
+
+        // Fetch log channel from database with error handling
+        const logChannelData = db.prepare('SELECT log_channel FROM guild_settings WHERE guild_id = ?')
+            .get(interaction.guild.id);
+
+        if (logChannelData?.log_channel) {
+            try {
+                const logChannel = await interaction.guild.channels.fetch(logChannelData.log_channel);
+                
+                if (logChannel?.isTextBased()) {
+                    // Create detailed embed
+                    const logEmbed = new EmbedBuilder()
+                        .setColor('#FF0000')
+                        .setTitle('Message Purge Log')
+                        .setDescription([
+                            `📝 Messages have been purged from ${userTag}`,
+                            ``,
+                            `📊 **Statistics**`,
+                            `• Total Messages: ${logData.length}`,
+                            `• File Name: \`${fileName}\``
+                        ].join('\n'))
+                        .addFields(
+                            { 
+                                name: '👮 Moderator', 
+                                value: `${interaction.user.tag}\n(${interaction.user.id})`, 
+                                inline: true 
+                            },
+                            { 
+                                name: '🎯 Target User', 
+                                value: `${userTag}\n(${userId})`, 
+                                inline: true 
+                            },
+                            { 
+                                name: '⏰ Timestamp', 
+                                value: `<t:${Math.floor(Date.now() / 1000)}:F>`, 
+                                inline: true 
+                            }
+                        )
+                        .setTimestamp()
+                        .setFooter({ 
+                            text: `Server: ${interaction.guild.name} | ID: ${interaction.guild.id}` 
+                        });
+
+                    // Send embed with file
+                    await logChannel.send({
+                        embeds: [logEmbed],
+                        files: [{
+                            attachment: filePath,
+                            name: fileName,
+                            description: `Purge log for ${userTag}`
+                        }]
+                    });
+
+                    console.log(`📨 Log file sent to channel: #${logChannel.name}`);
+                }
+            } catch (channelError) {
+                console.error('Error accessing log channel:', channelError);
+                await interaction.followUp({
+                    content: "⚠️ Could not send log to the designated log channel. Please check channel permissions.",
+                    flags: 64
+                });
+            }
+        }
+
+        // Confirm to user
+        await interaction.followUp({
+            content: [
+                `✅ Log file has been saved successfully!`,
+                `📁 File: \`${fileName}\``,
+                `📊 Total messages logged: **${logData.length}**`
+            ].join('\n'),
+            flags: 64
         });
+
+        // Cleanup old log files (older than 30 days)
+        try {
+            const files = await fs.promises.readdir(logDir);
+            const now = Date.now();
+            const maxAge = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+            for (const file of files) {
+                const filePath = path.join(logDir, file);
+                const stats = await fs.promises.stat(filePath);
+                if (now - stats.mtime.getTime() > maxAge) {
+                    await fs.promises.unlink(filePath);
+                    console.log(`🗑️ Deleted old log file: ${file}`);
+                }
+            }
+        } catch (cleanupError) {
+            console.error('Error during log cleanup:', cleanupError);
+        }
+
     } catch (error) {
-        console.error("Error banning user:", error);
-        interaction.reply({
-            content: `An error occurred while banning ${target.tag}: ${error.message}`,
+        console.error("Error in log handling:", error);
+        await interaction.followUp({
+            content: [
+                "❌ An error occurred while saving the log file:",
+                `\`\`\`${error.message}\`\`\``,
+                "Please contact an administrator."
+            ].join('\n'),
             flags: 64
         });
     }
-});
+}
+
+// Function to delete old messages with rate limit
+async function deleteOldMessagesWithRateLimit(interaction, messageData, userTag) {
+    let delay = 1500;
+    let deletedCount = 0;
+    let errorCount = 0;
+    let skippedCount = 0;
+    let lastProgressUpdate = Date.now();
+    const progressUpdateInterval = 5000; // Update progress every 5 seconds
+
+    // Create initial progress message
+    const progressMessage = await interaction.followUp({
+        content: `⏳ Starting deletion of ${messageData.length} older messages...`,
+        flags: 64
+    });
+
+    for (const messageInfo of messageData) {
+        try {
+            // Fetch channel
+            const channel = await interaction.guild.channels.fetch(messageInfo.channelId).catch(() => null);
+            if (!channel) {
+                skippedCount++;
+                console.warn(`Channel ${messageInfo.channelId} not found or inaccessible`);
+                continue;
+            }
+
+            // Fetch and delete message
+            const message = await channel.messages.fetch(messageInfo.id).catch(() => null);
+            if (!message) {
+                skippedCount++;
+                continue;
+            }
+
+            await message.delete();
+            deletedCount++;
+
+            // Update progress periodically
+            if (Date.now() - lastProgressUpdate >= progressUpdateInterval) {
+                const progress = Math.floor((deletedCount + errorCount + skippedCount) / messageData.length * 100);
+                await progressMessage.edit({
+                    content: [
+                        `⏳ Deletion in progress... (${progress}%)`,
+                        `✅ Deleted: **${deletedCount}**`,
+                        `⚠️ Errors: **${errorCount}**`,
+                        `⏭️ Skipped: **${skippedCount}**`,
+                        `🎯 Total: **${messageData.length}**`,
+                        `⏱️ Current delay: ${delay}ms`
+                    ].join('\n'),
+                    flags: 64
+                }).catch(() => null);
+                lastProgressUpdate = Date.now();
+            }
+
+            // Dynamic delay adjustment
+            await new Promise(r => setTimeout(r, delay));
+
+        } catch (error) {
+            errorCount++;
+            
+            if (error.code === 50013) {
+                console.error(`❌ Missing permissions in channel ${messageInfo.channelId}`);
+                // Skip remaining messages in this channel
+                messageData = messageData.filter(m => m.channelId !== messageInfo.channelId);
+                
+            } else if (error.code === 429) {
+                console.warn(`🚦 Rate limited! Increasing delay from ${delay}ms to ${delay * 2}ms`);
+                delay = Math.min(delay * 2, 5000); // Cap at 5 seconds
+                await new Promise(r => setTimeout(r, delay * 2));
+                
+            } else if (error.code === 10008) {
+                // Message already deleted
+                skippedCount++;
+                
+            } else {
+                console.error(`❌ Error deleting message ${messageInfo.id}:`, error);
+                // Slightly increase delay on unknown errors
+                delay = Math.min(delay + 100, 5000);
+            }
+        }
+    }
+
+    // Send final report
+    const finalReport = [
+        `✅ Deletion Complete!`,
+        ``,
+        `📊 Final Statistics:`,
+        `✨ Successfully deleted: **${deletedCount}**`,
+        `⚠️ Errors encountered: **${errorCount}**`,
+        `⏭️ Messages skipped: **${skippedCount}**`,
+        `📝 Total processed: **${messageData.length}**`
+    ].join('\n');
+
+    try {
+        await progressMessage.edit({
+            content: finalReport,
+            flags: 64
+        });
+    } catch {
+        // If editing fails, send as new message
+        await interaction.followUp({
+            content: finalReport,
+            flags: 64
+        });
+    }
+
+    // Log completion to console
+    console.log(`Completed message deletion for ${userTag}:`, {
+        deleted: deletedCount,
+        errors: errorCount,
+        skipped: skippedCount,
+        total: messageData.length
+    });
+
+    return {
+        deletedCount,
+        errorCount,
+        skippedCount
+    };
+}
 
 // Kick Command
 client.on('interactionCreate', async (interaction) => {
@@ -2111,6 +2524,149 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
+// Ban Command
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isCommand() || interaction.commandName !== "tgc-ban") return;
+
+    // Check Permissions
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64
+        });
+    }
+
+    const target = interaction.options.getUser("user");
+    const reason = interaction.options.getString("reason") || "No reason provided";
+    const days = interaction.options.getInteger("days") || 0;
+    const hours = interaction.options.getInteger("hours") || 0;
+    const minutes = interaction.options.getInteger("minutes") || 0;
+    const deleteMessageDays = interaction.options.getInteger("delete_messages") || 0;
+
+    // Validate inputs
+    if (!target) {
+        return interaction.reply({ content: "❌ You must specify a user to ban.", flags: 64 });
+    }
+    if (deleteMessageDays < 0 || deleteMessageDays > 14) {
+        return interaction.reply({ content: "❌ Message deletion must be between 0 and 14 days.", flags: 64 });
+    }
+
+    try {
+        // Calculate total ban duration in milliseconds
+        const totalDuration = (days * 24 * 60 * 60 * 1000) + 
+                              (hours * 60 * 60 * 1000) + 
+                              (minutes * 60 * 1000);
+        const expiresAt = totalDuration > 0 ? Date.now() + totalDuration : null;
+
+        // Convert duration to human-readable text
+        let durationText = "";
+        if (days > 0) durationText += `${days} days `;
+        if (hours > 0) durationText += `${hours} hours `;
+        if (minutes > 0) durationText += `${minutes} minutes`;
+        if (!durationText) durationText = "Permanent";
+
+        // Get list of servers where the bot **can** ban
+        const serverList = client.guilds.cache
+            .filter(guild => guild.members.me.permissions.has("BanMembers"))
+            .map(guild => `• ${guild.name}`);
+
+        if (serverList.length === 0) {
+            return interaction.reply({ content: "❌ The bot does not have ban permissions in any server.", flags: 64 });
+        }
+
+        //  Notify the user before banning
+        const banNotificationEmbed = new EmbedBuilder()
+            .setColor("#FF0000")
+            .setTitle("🔨 You Have Been Banned")
+            .setDescription([
+                `You have been globally banned from all servers using **The Great Clock.**`,
+                ``,
+                `**Reason:** ${reason}`,
+                `**Duration:** ${durationText}`,
+                ``,
+                `**Affected Servers:**`,
+                serverList.join("\n"),
+                ``,
+                `If this was a mistake, please contact the server admins.`
+            ].join("\n"))
+            .setTimestamp();
+
+        try {
+            await target.send({ embeds: [banNotificationEmbed] });
+        } catch (error) {
+            console.log(`⚠️ Could not send ban notification to ${target.tag}.`);
+        }
+
+        // 🛠️ Store the ban in the database
+        try {
+            db.prepare(`
+                INSERT INTO global_bans (user_id, reason, expires_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE 
+                SET reason = excluded.reason, expires_at = excluded.expires_at
+            `).run(target.id, reason, expiresAt);
+        } catch (error) {
+            console.error("Database error:", error);
+            return interaction.reply({ content: "❌ Database error while storing the ban.", flags: 64 });
+        }
+
+        // 🔨 Apply the ban across all guilds
+        let successCount = 0;
+        let failCount = 0;
+        let successfulBans = [];
+        let failedBans = [];
+
+        for (const guild of client.guilds.cache.values()) {
+            try {
+                const botMember = guild.members.me;
+                if (!botMember || !botMember.permissions.has("BanMembers")) {
+                    failedBans.push(guild.name);
+                    failCount++;
+                    continue;
+                }
+
+                await guild.members.ban(target.id, {
+                    reason: reason,
+                    deleteMessageSeconds: deleteMessageDays * 86400 // Convert days to seconds
+                });
+
+                successCount++;
+                successfulBans.push(guild.name);
+            } catch (err) {
+                console.error(`❌ Failed to ban in ${guild.name}:`, err);
+                failCount++;
+                failedBans.push(guild.name);
+            }
+        }
+
+        // Create and send the ban confirmation embed
+        const embed = new EmbedBuilder()
+            .setColor("#FF0000")
+            .setTitle("🔨 Global Ban Executed")
+            .setDescription([
+                `**Target:** ${target.tag} (${target.id})`,
+                `**Reason:** ${reason}`,
+                `**Duration:** ${durationText}`,
+                deleteMessageDays > 0 ? `**Message Deletion:** Last ${deleteMessageDays} days` : "",
+                "",
+                "**Results:**",
+                `✅ Successfully banned in **${successCount}** servers:`,
+                successfulBans.length ? successfulBans.map(name => `• ${name}`).join("\n") : "*None*",
+                failCount > 0 ? [
+                    `\n❌ Failed to ban in **${failCount}** servers:`,
+                    failedBans.length ? failedBans.map(name => `• ${name}`).join("\n") : "*None*"
+                ].join("\n") : ""
+            ].join("\n"))
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed]});
+
+    } catch (error) {
+        console.error("❌ Error executing global ban:", error);
+        await interaction.reply({ content: "An error occurred while executing the ban.", flags: 64 });
+    }
+});
+
 // Ban List Command
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-banlist') return;
@@ -2123,6 +2679,9 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 
+    // Defer the reply immediately
+    await interaction.deferReply({ flags: 64 });
+
     try {
         // Synchronize bans before displaying them
         await synchronizeBans();
@@ -2131,9 +2690,8 @@ client.on('interactionCreate', async (interaction) => {
         const bans = db.prepare('SELECT * FROM global_bans').all();
 
         if (!bans.length) {
-            return interaction.reply({
-                content: 'No users are currently banned.',
-                flags: 64
+            return interaction.editReply({
+                content: 'No users are currently banned.'
             });
         }
 
@@ -2169,206 +2727,328 @@ client.on('interactionCreate', async (interaction) => {
         }
         if (currentChunk) banChunks.push(currentChunk);
 
-        // Reply with the first message and follow up with the rest
-        await interaction.reply({ content: banChunks.shift(), flags: 64 });
+        // Send the first chunk as the main reply
+        await interaction.editReply({ content: banChunks[0] });
 
-        for (const chunk of banChunks) {
-            await interaction.followUp({ content: chunk, flags: 64 });
+        // Send remaining chunks as follow-up messages
+        for (let i = 1; i < banChunks.length; i++) {
+            await interaction.followUp({ 
+                content: banChunks[i],
+                flags: 64
+            });
         }
+
     } catch (error) {
         console.error('Error fetching ban list:', error);
-        return interaction.reply({
-            content: 'An error occurred while fetching the ban list.',
-            flags: 64
+        await interaction.editReply({
+            content: 'An error occurred while fetching the ban list.'
         });
     }
 });
 
-// unban Command
+// unban utocomplete handler
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isAutocomplete()) return;
+
+    if (interaction.commandName === 'tgc-unban') {
+        const focusedValue = interaction.options.getFocused().toLowerCase();
+        
+        try {
+            // Get all banned users from database and guilds
+            const bannedUsers = new Map();
+
+            // Get database bans
+            const dbBans = db.prepare('SELECT * FROM global_bans').all();
+            for (const ban of dbBans) {
+                bannedUsers.set(ban.user_id, {
+                    id: ban.user_id,
+                    reason: ban.reason,
+                    source: 'Database'
+                });
+            }
+
+            // Get guild bans
+            for (const guild of client.guilds.cache.values()) {
+                try {
+                    const guildBans = await guild.bans.fetch();
+                    for (const [userId, banInfo] of guildBans) {
+                        if (!bannedUsers.has(userId)) {
+                            bannedUsers.set(userId, {
+                                id: userId,
+                                reason: banInfo.reason || 'No reason provided',
+                                source: guild.name
+                            });
+                        }
+                    }
+                } catch (error) {
+                    console.error(`Failed to fetch bans from guild ${guild.name}:`, error);
+                }
+            }
+
+            // Try to fetch user details for each banned user
+            const bannedUserDetails = await Promise.all(
+                Array.from(bannedUsers.entries()).map(async ([userId, banInfo]) => {
+                    try {
+                        const user = await client.users.fetch(userId);
+                        return {
+                            id: userId,
+                            name: user.tag,
+                            reason: banInfo.reason,
+                            source: banInfo.source
+                        };
+                    } catch {
+                        return {
+                            id: userId,
+                            name: 'Unknown User',
+                            reason: banInfo.reason,
+                            source: banInfo.source
+                        };
+                    }
+                })
+            );
+
+            // Filter based on search input
+            const matches = bannedUserDetails.filter(user => 
+                user.name.toLowerCase().includes(focusedValue) || 
+                user.id.includes(focusedValue)
+            );
+
+            // Format choices
+            const choices = matches.slice(0, 25).map(user => ({
+                name: `${user.name} (${user.source})`,
+                value: user.id
+            }));
+
+            await interaction.respond(choices);
+
+        } catch (error) {
+            console.error('Error in unban autocomplete:', error);
+            await interaction.respond([]);
+        }
+    }
+});
+
+// Unban Command Handler
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-unban') return;
 
     // Permission Check
     if (!checkCommandPermission(interaction)) {
         return interaction.reply({
-            content: 'You do not have permission to use this command.',
+            content: '❌ You do not have permission to use this command.',
             flags: 64
         });
     }
 
+    await interaction.deferReply({ });
+
     try {
-        // Synchronize bans with the database
-        await synchronizeBans();
+        const searchInput = interaction.options.getString('search');
+        
+        // Get all banned users from database and guilds
+        const bannedUsers = new Map();
 
-        // Fetch updated bans from the database
-        const bans = db.prepare('SELECT * FROM global_bans').all();
-
-        if (!bans.length) {
-            return interaction.reply({
-                content: 'There are no users currently banned.',
-                flags: 64
+        // Get database bans
+        const dbBans = db.prepare('SELECT * FROM global_bans').all();
+        for (const ban of dbBans) {
+            bannedUsers.set(ban.user_id, {
+                id: ban.user_id,
+                reason: ban.reason,
+                source: 'Database Ban',
+                expires: ban.expires_at ? new Date(ban.expires_at).toLocaleString() : 'Never'
             });
         }
 
-        // Split bans into pages of 25
-        const MAX_OPTIONS = 25;
-        const totalPages = Math.ceil(bans.length / MAX_OPTIONS);
-        let currentPage = 0;
-
-        // Function to generate options for the dropdown
-        const generateOptions = (page) => {
-            return bans.slice(page * MAX_OPTIONS, (page + 1) * MAX_OPTIONS).map((ban) => {
-                return {
-                    label: `User ID: ${ban.user_id}`, // Display user ID (Fetch username later)
-                    description: ban.expires_at
-                        ? `Expires: <t:${Math.floor(ban.expires_at / 1000)}:R>`
-                        : 'Permanent Ban',
-                    value: ban.user_id
-                };
-            });
-        };
-
-        // Create the dropdown menu
-        const selectMenu = new StringSelectMenuBuilder()
-            .setCustomId(`selectUnbanUser_${currentPage}`)
-            .setPlaceholder('Select a user to unban')
-            .addOptions(generateOptions(currentPage));
-
-        // Add "Next Page" button if there are multiple pages
-        const components = [new ActionRowBuilder().addComponents(selectMenu)];
-        if (totalPages > 1) {
-            components.push(new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('nextPage')
-                    .setLabel('Next Page ➡️')
-                    .setStyle(ButtonStyle.Primary)
-            ));
-        }
-
-        return interaction.reply({
-            content: `Select a user from the list to unban: (Page **${currentPage + 1}** of **${totalPages}**)`,
-            components,
-            flags: 64
-        });
-
-    } catch (error) {
-        console.error('Error fetching unban list:', error);
-        return interaction.reply({
-            content: 'An error occurred while fetching the ban list.',
-            flags: 64
-        });
-    }
-});
-
-// Handle dropdown selection for unban with user confirmation & per-guild results
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isStringSelectMenu() || !interaction.customId.startsWith('selectUnbanUser')) return;
-
-    const userId = interaction.values[0]; // Selected user ID
-
-    try {
-        // Attempt to fetch the user's details from Discord
-        let user;
-        try {
-            user = await client.users.fetch(userId);
-        } catch (fetchError) {
-            console.warn(`Could not fetch user ${userId}, using ID instead.`);
-        }
-
-        // Remove the user from the database
-        db.prepare('DELETE FROM global_bans WHERE user_id = ?').run(userId);
-
-        // Attempt to unban the user from all guilds
-        let unbanResults = [];
-        for (const [guildId, guild] of client.guilds.cache) {
+        // Get guild bans
+        for (const guild of client.guilds.cache.values()) {
             try {
-                await guild.bans.remove(userId, 'Unbanned via dropdown menu');
-                unbanResults.push(`✅ Unbanned from: **${guild.name}**`);
+                const guildBans = await guild.bans.fetch();
+                for (const [userId, banInfo] of guildBans) {
+                    if (!bannedUsers.has(userId)) {
+                        bannedUsers.set(userId, {
+                            id: userId,
+                            reason: banInfo.reason || 'No reason provided',
+                            source: `Server: ${guild.name}`,
+                            expires: 'N/A'
+                        });
+                    }
+                }
             } catch (error) {
-                console.error(`Failed to unban user ${userId} in guild ${guild.name}:`, error);
-                unbanResults.push(`❌ Failed to unban from: **${guild.name}**`);
+                console.error(`Failed to fetch bans from guild ${guild.name}:`, error);
             }
         }
 
-        // Get the user's name or fallback to ID
-        const userTag = user ? `${user.tag} (ID: ${user.id})` : `Unknown User (ID: ${userId})`;
+        // Try to find the user by ID or username
+        let targetUserId = null;
+        let userDetails = null;
+        
+        // First, check if the search input is a valid user ID
+        if (/^\d+$/.test(searchInput)) {
+            targetUserId = searchInput;
+            try {
+                userDetails = await client.users.fetch(targetUserId);
+            } catch {
+                // User not found by ID
+            }
+        }
 
-        // Send confirmation with user details
-        return interaction.update({
-            content: `**${userTag}** has been unbanned.\n\n${unbanResults.join('\n')}`,
-            components: [],
-        });
-    } catch (error) {
-        console.error('Error during unban:', error);
+        // If not found by ID, try to find by username
+        if (!userDetails) {
+            for (const [userId, banInfo] of bannedUsers) {
+                try {
+                    const user = await client.users.fetch(userId);
+                    if (user.tag.toLowerCase().includes(searchInput.toLowerCase())) {
+                        targetUserId = userId;
+                        userDetails = user;
+                        break;
+                    }
+                } catch {
+                    continue;
+                }
+            }
+        }
 
-        // Handle unknown users or errors
-        return interaction.update({
-            content: `An error occurred while unbanning the user with ID: ${userId}.`,
-            components: [],
-        });
-    }
-});
-
-// Handle pagination for the dropdown
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton() || interaction.customId !== 'nextPage') return;
-
-    try {
-        let currentPage = parseInt(interaction.message.content.match(/\d+/g)[0]) - 1; // Extract current page
-        currentPage++;
-
-        const bans = db.prepare('SELECT * FROM global_bans').all();
-        const MAX_OPTIONS = 25;
-        const totalPages = Math.ceil(bans.length / MAX_OPTIONS);
-
-        if (currentPage >= totalPages) {
-            return interaction.reply({
-                content: 'No more pages available.',
+        if (!targetUserId || !bannedUsers.has(targetUserId)) {
+            return interaction.editReply({
+                content: '❌ Could not find a banned user matching your search.',
                 flags: 64
             });
         }
 
-        // Generate new options
-        const newOptions = bans.slice(currentPage * MAX_OPTIONS, (currentPage + 1) * MAX_OPTIONS).map((ban) => {
-            return {
-                label: `User ID: ${ban.user_id}`,
-                description: ban.expires_at
-                    ? `Expires: <t:${Math.floor(ban.expires_at / 1000)}:R>`
-                    : 'Permanent Ban',
-                value: ban.user_id
-            };
+        const banInfo = bannedUsers.get(targetUserId);
+
+        // Create confirmation embed
+        const confirmEmbed = new EmbedBuilder()
+            .setColor('#FF0000')
+            .setTitle('🔓 Confirm Unban')
+            .setDescription([
+                `Are you sure you want to unban this user?`,
+                '',
+                `👤 **User:** ${userDetails ? userDetails.tag : `ID: ${targetUserId}`}`,
+                `📋 **Ban Source:** ${banInfo.source}`,
+                `❓ **Reason:** ${banInfo.reason}`,
+                `⏰ **Expires:** ${banInfo.expires}`,
+                '',
+                '✅ Click the buttons below to confirm or cancel.'
+            ].join('\n'))
+            .setThumbnail(userDetails ? userDetails.displayAvatarURL({ dynamic: true }) : null)
+            .setTimestamp();
+
+        // Create confirmation buttons
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`confirm_unban_${targetUserId}`)
+                    .setLabel('✅ Confirm Unban')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId(`cancel_unban_${targetUserId}`)
+                    .setLabel('❌ Cancel')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+        // Send confirmation message
+        const confirmMsg = await interaction.editReply({
+            embeds: [confirmEmbed],
+            components: [row]
         });
 
-        // Create new dropdown menu
-        const selectMenu = new StringSelectMenuBuilder()
-            .setCustomId(`selectUnbanUser_${currentPage}`)
-            .setPlaceholder('Select a user to unban')
-            .addOptions(newOptions);
+        // Create button collector
+        const collector = confirmMsg.createMessageComponentCollector({
+            filter: i => i.user.id === interaction.user.id,
+            time: 30000,
+            max: 1
+        });
 
-        // Add "Next Page" button if there are more pages
-        const components = [new ActionRowBuilder().addComponents(selectMenu)];
-        if (currentPage < totalPages - 1) {
-            components.push(new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('nextPage')
-                    .setLabel('Next Page ➡️')
-                    .setStyle(ButtonStyle.Primary)
-            ));
-        }
+        collector.on('collect', async i => {
+            if (i.customId === `confirm_unban_${targetUserId}`) {
+                await processUnban(i, targetUserId, userDetails);
+            } else {
+                await i.update({
+                    content: '❌ Unban cancelled.',
+                    embeds: [],
+                    components: [],
+                    flags: 64
+                });
+            }
+        });
 
-        return interaction.update({
-            content: `Select a user from the list to unban: (Page **${currentPage + 1}** of **${totalPages}**)`,
-            components
+        collector.on('end', collected => {
+            if (collected.size === 0) {
+                interaction.editReply({
+                    content: '⏰ Unban confirmation timed out.',
+                    embeds: [],
+                    components: [],
+                    flags: 64
+                });
+            }
         });
 
     } catch (error) {
-        console.error('Error handling pagination:', error);
-        return interaction.reply({
-            content: 'An error occurred while fetching the next page.',
+        console.error('Error in unban command:', error);
+        return interaction.editReply({
+            content: '❌ An error occurred while processing the unban command.',
             flags: 64
         });
     }
 });
+
+// Process Unban Function
+async function processUnban(interaction, targetUserId, userDetails) {
+    try {
+        // Remove from database if exists
+        db.prepare('DELETE FROM global_bans WHERE user_id = ?').run(targetUserId);
+
+        // Unban from all guilds
+        const results = [];
+        for (const guild of interaction.client.guilds.cache.values()) {
+            try {
+                const guildBan = await guild.bans.fetch(targetUserId).catch(() => null);
+                if (guildBan) {
+                    try {
+                        await guild.bans.remove(targetUserId);
+                        results.push(`✅ Unbanned from **${guild.name}**`);
+                    } catch (unbanError) {
+                        console.error(`Failed to unban in guild ${guild.name}:`, unbanError);
+                        results.push(`❌ Failed to unban in **${guild.name}**`);
+                    }
+                } else {
+                    results.push(`⏭️ Not banned in **${guild.name}**`);
+                }
+            } catch (error) {
+                console.error(`Failed to check/unban in guild ${guild.name}:`, error);
+                results.push(`❌ Failed to process in **${guild.name}**`);
+            }
+        }
+
+        // Create result embed
+        const resultEmbed = new EmbedBuilder()
+            .setColor('#00FF00')
+            .setTitle('🔓 Unban Successful')
+            .setDescription([
+                `Successfully processed unban for **${userDetails ? userDetails.tag : `ID: ${targetUserId}`}**`,
+                '',
+                '📋 **Results:**',
+                results.join('\n')
+            ].join('\n'))
+            .setTimestamp();
+
+        await interaction.update({
+            embeds: [resultEmbed],
+            components: [],
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('Error processing unban:', error);
+        await interaction.update({
+            content: '❌ An error occurred while processing the unban.',
+            embeds: [],
+            components: [],
+            flags: 64
+        });
+    }
+}
 
 // Synchronize bans between Discord and the database
 async function synchronizeBans() {
@@ -2541,7 +3221,7 @@ client.on("interactionCreate", async (interaction) => {
             });
         }
 
-        const action = options.getString("action"); // "add" or "remove"
+        const action = options.getString("action");
         const role = options.getRole("role");
 
         if (!role) {
@@ -2557,9 +3237,8 @@ client.on("interactionCreate", async (interaction) => {
             if (action === "add") {
                 // Add role to the command_roles table
                 db.prepare(`
-                    INSERT INTO command_roles (guild_id, role_id)
+                    INSERT OR IGNORE INTO command_roles (guild_id, role_id)
                     VALUES (?, ?)
-                    ON CONFLICT DO NOTHING
                 `).run(guildId, role.id);
 
                 await interaction.reply({
@@ -2568,11 +3247,12 @@ client.on("interactionCreate", async (interaction) => {
                 });
             } else if (action === "remove") {
                 // Remove role from the command_roles table
-                const changes = db.prepare(`
-                    DELETE FROM command_roles WHERE guild_id = ? AND role_id = ?
+                const result = db.prepare(`
+                    DELETE FROM command_roles 
+                    WHERE guild_id = ? AND role_id = ?
                 `).run(guildId, role.id);
 
-                if (changes.changes === 0) {
+                if (result.changes === 0) {
                     return interaction.reply({
                         content: `Role **${role.name}** was not found in the command roles list.`,
                         flags: 64
@@ -2581,12 +3261,6 @@ client.on("interactionCreate", async (interaction) => {
 
                 await interaction.reply({
                     content: `Role **${role.name}** has been removed from the command roles list.`,
-                    flags: 64
-                });
-            } else {
-                // Invalid action
-                await interaction.reply({
-                    content: "Invalid action. Use 'add' or 'remove'.",
                     flags: 64
                 });
             }
@@ -2649,6 +3323,97 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 });
+
+// Set Alert Channel Command
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-setalertchannel') return;
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64
+        });
+    }
+
+    const channel = interaction.options.getChannel('channel');
+    const guildId = interaction.guild?.id;
+
+    if (!channel.isTextBased()) {
+        return interaction.reply({
+            content: '❌ Please select a text channel!',
+            flags: 64
+        });
+    }
+
+    try {
+        db.prepare(`
+            INSERT INTO new_user_alerts (guild_id, channel_id)
+            VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id
+        `).run(guildId, channel.id);
+
+        await interaction.reply({
+            content: `✅ New user alerts will now be sent to ${channel}`,
+            flags: 64
+        });
+    } catch (error) {
+        console.error('Error setting alert channel:', error);
+        await interaction.reply({
+            content: '❌ An error occurred while setting the alert channel.',
+            flags: 64
+        });
+    }
+});
+
+// New User Alert System
+client.on('guildMemberAdd', async member => {
+    try {
+        const accountAge = Date.now() - member.user.createdTimestamp;
+        const daysOld = Math.floor(accountAge / (1000 * 60 * 60 * 24));
+
+        if (daysOld < 30) {
+            // Fetch alert channel from database
+            const alertChannel = db.prepare(
+                'SELECT channel_id FROM new_user_alerts WHERE guild_id = ?'
+            ).get(member.guild.id);
+
+            if (alertChannel) {
+                const channel = member.guild.channels.cache.get(alertChannel.channel_id);
+                if (channel && channel.isTextBased()) {
+                    // Fetch staff roles from command_roles table
+                    const staffRoles = db.prepare(
+                        'SELECT role_id FROM command_roles WHERE guild_id = ?'
+                    ).all(member.guild.id);
+
+                    // Create role mentions string
+                    const roleMentions = staffRoles.map(role => `<@&${role.role_id}>`).join(' ');
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('⚠️ New User Alert')
+                        .setColor('#FF0000')
+                        .setDescription([
+                            `👤 **User:** ${member.user.tag}`,
+                            `🆔 **ID:** ${member.user.id}`,
+                            `📅 **Account Age:** ${daysOld} days`,
+                            `⚠️ **Warning:** This account is less than 30 days old!`
+                        ].join('\n'))
+                        .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+                        .setTimestamp();
+
+                    // Send the alert with role pings
+                    await channel.send({
+                        content: roleMentions ? `${roleMentions}` : null,
+                        embeds: [embed]
+                    });
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error in new user alert system:', error);
+    }
+});
+
 
 // Open Ticket Command
 client.on('interactionCreate', async (interaction) => {
@@ -2774,7 +3539,7 @@ async function createTicketChannel(interaction, selectedType, selectedCategory =
     }
 }
 
-// 📌 Function to Fetch ALL Role IDs for This Guild
+// Function to Fetch ALL Role IDs for This Guild
 function getAllGuildRoles(guildId) {
     try {
         const rows = db.prepare(`SELECT role_id FROM command_roles WHERE guild_id = ?`).all(guildId);
@@ -3270,8 +4035,8 @@ async function battleTurn() {
         let loserName = hp1 > 0 ? fighter2Name : fighter1Name;
 
         // Reward system: Random bolts between 20-50
-        const minBolts = 20;
-        const maxBolts = 50;
+        const minBolts = 200;
+        const maxBolts = 500;
         const reward = Math.floor(Math.random() * (maxBolts - minBolts + 1)) + minBolts;
 
         // Update currency balance for the winner
@@ -4096,7 +4861,6 @@ client.on("messageCreate", async (message) => {
     }
 });
 
-
 // Handle Bolt Crate Claim
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isButton() || !interaction.customId.startsWith("claim_bolt_crate_")) return;
@@ -4516,13 +5280,21 @@ setInterval(async () => {
     await synchronizeBans();
 }, 5 * 60 * 1000); // 5 minutes
 
-client.on('ready', () => {
+client.once('ready', () => {
+    client.user.setActivity({
+        type: ActivityType.Custom,
+        name: 'The Great Clock',
+        state: 'Use /tgc-profile to see your level',
+    });
+    
     console.log('Bot is ready!');
     console.log(`Available Guilds: ${client.guilds.cache.size}`);
 
     client.guilds.cache.forEach((guild) => {
         console.log(`Guild: ${guild.name} (ID: ${guild.id})`);
     });
+
+    console.log(`${client.user.tag} is ready!`);
 });
 
 // Start Bot
