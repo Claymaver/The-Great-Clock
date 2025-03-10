@@ -1,47 +1,126 @@
-const {Client,GatewayIntentBits,REST,Routes,SlashCommandBuilder, PermissionFlagsBits,EmbedBuilder,ModalBuilder,TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder,ButtonBuilder,ButtonStyle,ChannelType, PermissionsBitField, ActivityType, Events } = require('discord.js');require('dotenv').config();
-
-    const client = new Client({
-        intents: [
-            GatewayIntentBits.Guilds,
-            GatewayIntentBits.GuildMembers,
-            GatewayIntentBits.GuildMessages,
-            GatewayIntentBits.MessageContent,
-            GatewayIntentBits.GuildModeration,
-            "Guilds"
-        ],
-    });
+const { Client,
+    GatewayIntentBits,
+    REST,
+    Routes,
+    SlashCommandBuilder,
+    PermissionFlagsBits,
+    EmbedBuilder,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ActionRowBuilder,
+    StringSelectMenuBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ChannelType,
+    PermissionsBitField,
+    ActivityType,
+    Events,
+} = require('discord.js'); require('dotenv').config();
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildModeration,
+        "Guilds"
+    ],
+});
 const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
-
+const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 // Imgur API configuration
 const IMGUR_CLIENT_ID = 'ef2b857ff2c5154'; // Replace with your Imgur client ID
-
-// Simple rate limiter for Imgur uploads
 const imgurRateLimiter = {
     lastUpload: 0,
     minInterval: 10000, // 10 seconds between uploads
-    
+
     async waitForNextSlot() {
         const now = Date.now();
         const timeSinceLastUpload = now - this.lastUpload;
-        
+
         if (timeSinceLastUpload < this.minInterval) {
             const waitTime = this.minInterval - timeSinceLastUpload;
             await new Promise(resolve => setTimeout(resolve, waitTime));
         }
-        
+
         this.lastUpload = Date.now();
     }
 };
 
-// Initialize the REST client
-const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+// ====================================
+//           Logging Setup
+// ====================================
+const util = require('util');
+const logsDir = path.join(__dirname, 'debug_logs');
+if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir);
+}
 
-// Initialize Database
-const db = new Database('leveling.db', { verbose: console.log }); 
+const logFile = fs.createWriteStream(
+    path.join(logsDir, `debug_${new Date().toISOString().split('T')[0]}.log`),
+    { flags: 'a' }
+);
+
+// Store original console methods
+const originalConsole = {
+    log: console.log,
+    error: console.error,
+    warn: console.warn
+};
+
+// Modified logger implementation
+const logger = {
+    log: function (...args) {
+        const message = util.format(...args);
+        const timestamp = new Date().toISOString();
+        const logMessage = `[${timestamp}] INFO: ${message}\n`;
+
+        // Call original console.log
+        originalConsole.log(...args);
+        // Write to log file
+        logFile.write(logMessage);
+    },
+    error: function (...args) {
+        const message = util.format(...args);
+        const timestamp = new Date().toISOString();
+        const logMessage = `[${timestamp}] ERROR: ${message}\n`;
+
+        // Call original console.error
+        originalConsole.error(...args);
+        // Write to log file
+        logFile.write(logMessage);
+    },
+    warn: function (...args) {
+        const message = util.format(...args);
+        const timestamp = new Date().toISOString();
+        const logMessage = `[${timestamp}] WARN: ${message}\n`;
+
+        // Call original console.warn
+        originalConsole.warn(...args);
+        // Write to log file
+        logFile.write(logMessage);
+    }
+};
+
+// Override console methods with direct references to logger functions
+console.log = logger.log.bind(logger);
+console.error = logger.error.bind(logger);
+console.warn = logger.warn.bind(logger);
+
+// Cleanup on exit
+process.on('exit', () => {
+    logFile.end();
+});
+
+// ====================================
+//         Initialize Database
+// ====================================
+const db = new Database('leveling.db', { verbose: null });
 db.exec(`
     CREATE TABLE IF NOT EXISTS user_xp (
         user_id TEXT PRIMARY KEY,
@@ -58,12 +137,20 @@ db.exec(`
         PRIMARY KEY (level, guild_id)
     );
 
-    CREATE TABLE IF NOT EXISTS guild_settings (
+CREATE TABLE IF NOT EXISTS guild_settings (
     guild_id TEXT PRIMARY KEY,
     base_xp INTEGER DEFAULT 300,
     multiplier REAL DEFAULT 1.2,
-    log_channel TEXT DEFAULT NULL
+    log_channel TEXT DEFAULT NULL,
+    welcome_channel TEXT DEFAULT NULL,
+    level_up_channel TEXT DEFAULT NULL,
+    auto_role TEXT DEFAULT NULL,
+    crate_spawn_enabled INTEGER DEFAULT 1,
+    auto_publish INTEGER DEFAULT 0,
+    min_account_age INTEGER DEFAULT 0,
+    bolt_rewards_enabled INTEGER DEFAULT 1
 );
+
     CREATE TABLE IF NOT EXISTS global_bans (
         user_id TEXT PRIMARY KEY,
         reason TEXT NOT NULL DEFAULT 'No reason provided',
@@ -88,10 +175,6 @@ db.exec(`
     user_id TEXT PRIMARY KEY,
     expires_at INTEGER,
     reason TEXT
-    );
-    CREATE TABLE IF NOT EXISTS quotes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        text TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS new_user_alerts (
     guild_id TEXT PRIMARY KEY,
@@ -105,17 +188,13 @@ CREATE TABLE IF NOT EXISTS user_strikes (
     timestamp INTEGER,
     PRIMARY KEY (user_id, guild_id, timestamp)
 );
-`);
-db.exec(`
     CREATE TABLE IF NOT EXISTS disabled_crate_channels (
         channel_id TEXT PRIMARY KEY,
         guild_id TEXT NOT NULL
-    );
+);
 `);
 // Initialize Shop Database
-const shopDB = new Database('shop.db', { verbose: console.log });
-
-//  Ensure `shop_items` & `user_inventory` exist
+const shopDB = new Database('shop.db', { verbose: null });
 shopDB.exec(`
 CREATE TABLE IF NOT EXISTS shop_items (
     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,7 +207,8 @@ CREATE TABLE IF NOT EXISTS shop_items (
     health_bonus INTEGER DEFAULT 0,
     crit_chance_bonus REAL DEFAULT 0,
     crit_damage_bonus REAL DEFAULT 0,
-    bolt_bonus REAL DEFAULT 0
+    bolt_bonus REAL DEFAULT 0,
+    secret_item INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS user_inventory (
@@ -151,9 +231,6 @@ CREATE TABLE IF NOT EXISTS user_inventory (
     wins INTEGER DEFAULT 0,
     losses INTEGER DEFAULT 0
 );
-`);
-// Add to your initial database setup
-shopDB.exec(`
     CREATE TABLE IF NOT EXISTS events (
         name TEXT PRIMARY KEY,
         duration INTEGER,
@@ -162,41 +239,44 @@ shopDB.exec(`
         last_updated INTEGER,
         start_date INTEGER,
         end_date INTEGER
-    );
+);
 `);
-
-// Add connection checking and retry logic
+// Ensure database connections
 function ensureDatabaseConnection() {
-    try {
-        db.prepare('SELECT 1').get();
-        shopDB.prepare('SELECT 1').get();
-    } catch (error) {
-        console.error('Database connection error:', error);
-        // Implement reconnection logic or graceful shutdown
-        process.exit(1);
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 5000;
+    const CHECK_INTERVAL = 5 * 60 * 1000;
+    let lastSuccessfulCheck = Date.now();
+
+    async function tryConnect(attempt = 1) {
+        try {
+            db.prepare('SELECT 1').get();
+            shopDB.prepare('SELECT 1').get();
+
+            // Only log on first successful connection
+            if (!lastSuccessfulCheck) {
+                console.log('✅ Database connections established');
+            }
+            lastSuccessfulCheck = Date.now();
+        } catch (error) {
+            if (attempt < MAX_RETRIES) {
+                console.warn(`Database connection attempt ${attempt}/${MAX_RETRIES}`);
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                return tryConnect(attempt + 1);
+            }
+            console.error('❌ Fatal: Database connection failed');
+            process.exit(1);
+        }
     }
+
+    return tryConnect();
 }
-
-// Check connection periodically
-setInterval(ensureDatabaseConnection, 60000); // Every minute
-
-// Add try-catch blocks for database operations
-function calculateBoltBonus(userId) {
-    try {
-        const equippedItems = shopDB.prepare(`
-            SELECT SUM(si.bolt_bonus) as total_bonus
-            FROM shop_items si
-            JOIN user_inventory ui ON si.item_id = ui.item_id
-            WHERE ui.user_id = ? AND ui.is_equipped = 1
-        `).get(userId);
-
-        return 1 + (equippedItems?.total_bonus || 0);
-    } catch (error) {
-        console.error('Error calculating bolt bonus:', error);
-        return 1; // Return default multiplier on error
-    }
-}
-
+// Check connection periodically with reduced frequency
+setInterval(ensureDatabaseConnection, 5 * 60 * 1000); // Every 5 minutes
+// ====================================
+//            Prerequisites
+// ====================================
+// Check if the user has the required permissions to run the command
 function checkCommandPermission(interaction) {
     // Return true if user is an administrator
     if (interaction.member.permissions.has("Administrator")) {
@@ -231,7 +311,6 @@ function checkCommandPermission(interaction) {
         return false; // Return false on error to be safe
     }
 }
-
 // Ensure Guild Settings
 function ensureGuildSettings() {
     db.prepare(`
@@ -240,8 +319,711 @@ function ensureGuildSettings() {
         ON CONFLICT(guild_id) DO NOTHING
     `).run();
 }
+// Commands
+const Leveling_Commands = [
+    new SlashCommandBuilder()
+        .setName("tgc-profile")
+        .setDescription("View your profile or another user's profile.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user whose profile you want to view.")
+                .setRequired(false)),
+    new SlashCommandBuilder()
+        .setName("setlevelchannel")
+        .setDescription("Set the channel where level-up notifications are sent.")
+        .addChannelOption(option =>
+            option.setName("channel")
+                .setDescription("Select the level-up notification channel.")
+                .setRequired(true)
+                .addChannelTypes(ChannelType.GuildText)),
+    new SlashCommandBuilder()
+        .setName("tgc-setxp")
+        .setDescription("Set a user's global XP or level manually.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user whose global XP or level you want to set.")
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName("xp")
+                .setDescription("The global XP amount to set."))
+        .addIntegerOption(option =>
+            option.setName("level")
+                .setDescription("The level to set (overrides XP).")),
+    new SlashCommandBuilder()
+        .setName("tgc-setbasexp")
+        .setDescription("Set the base XP value for leveling.")
+        .addIntegerOption(option =>
+            option.setName("value")
+                .setDescription("The new base XP value.")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-setmultiplier")
+        .setDescription("Set the XP multiplier for leveling.")
+        .addNumberOption(option =>
+            option.setName("value")
+                .setDescription("The multiplier (default: 1.2).")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-setlevelrole")
+        .setDescription("Set a role to be applied when a user reaches a specific level.")
+        .addIntegerOption(option =>
+            option.setName("level")
+                .setDescription("The level at which the role will be applied.")
+                .setRequired(true))
+        .addRoleOption(option =>
+            option.setName("role")
+                .setDescription("The role to assign.")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-xpleaderboard")
+        .setDescription("View the top XP leaderboard."),
+];
+const Moderator_Commands = [
+    new SlashCommandBuilder()
+        .setName("tgc-ban")
+        .setDescription("Globally ban a user.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user to ban.")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("reason")
+                .setDescription("Reason for the ban.")
+                .setRequired(false))
+        .addIntegerOption(option =>
+            option.setName("days")
+                .setDescription("Number of days for the ban duration.")
+                .setMinValue(0)
+                .setRequired(false))
+        .addIntegerOption(option =>
+            option.setName("hours")
+                .setDescription("Number of hours for the ban duration.")
+                .setMinValue(0)
+                .setRequired(false))
+        .addIntegerOption(option =>
+            option.setName("minutes")
+                .setDescription("Number of minutes for the ban duration.")
+                .setMinValue(0)
+                .setRequired(false))
+        .addIntegerOption(option =>
+            option.setName("delete_messages")
+                .setDescription("Delete messages from the last X days (0-14).")
+                .setMinValue(0)
+                .setMaxValue(14)
+                .setRequired(false)),
+    new SlashCommandBuilder()
+        .setName("tgc-kick")
+        .setDescription("Globally kick a user.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user to kick.")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("reason")
+                .setDescription("Reason for the kick.")
+                .setRequired(false)),
+    new SlashCommandBuilder()
+        .setName("tgc-unban")
+        .setDescription("Search and unban users.")
+        .addStringOption(option =>
+            option.setName("search")
+                .setDescription("Search by username or ID")
+                .setRequired(true)
+        ),
+    new SlashCommandBuilder()
+        .setName("tgc-timeout")
+        .setDescription("Timeout a user across all servers.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user to timeout.")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("duration")
+                .setDescription("Timeout duration (e.g., 1d 2h 30m) or 0 to remove.")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("reason")
+                .setDescription("Reason for the timeout.")
+                .setRequired(false)),
+    new SlashCommandBuilder()
+        .setName("tgc-lock")
+        .setDescription("Locks or unlocks a channel (toggle).")
+        .addChannelOption(option =>
+            option.setName("channel")
+                .setDescription("The channel to lock/unlock.")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('tgc-managecommandroles')
+        .setDescription('Manage roles that can use TGC commands')
+        .addStringOption(option =>
+            option.setName('action')
+                .setDescription('Choose whether to add or remove a role')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'Add Role', value: 'add' },
+                    { name: 'Remove Role', value: 'remove' }
+                )
+        )
+        .addRoleOption(option =>
+            option.setName('role')
+                .setDescription('The role to add or remove')
+                .setRequired(true)
+        )
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName("tgc-purge")
+        .setDescription("Delete all messages from a user in the server.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user whose messages will be deleted")
+                .setRequired(true))
+        .addChannelOption(option =>
+            option.setName("channel")
+                .setDescription("The channel to purge messages from (optional)")
+                .setRequired(false)),
+    new SlashCommandBuilder()
+        .setName("tgc-strike")
+        .setDescription("Give a user a strike.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("User to give a strike to")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("reason")
+                .setDescription("Reason for the strike")
+                .setRequired(false)),
 
-// Calculate the level based on XP
+    new SlashCommandBuilder()
+        .setName("tgc-checkstrikes")
+        .setDescription("Check a user's strikes.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("User to check")
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("tgc-removestrike")
+        .setDescription("Remove a specific strike from a user.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("User to remove a strike from")
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName("strike")
+                .setDescription("Strike number to remove")
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("tgc-resetstrikes")
+        .setDescription("Reset all strikes for a user.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("User to reset strikes for")
+                .setRequired(true)),
+];
+const Forwarding_Commands = [
+    new SlashCommandBuilder()
+        .setName("tgc-toggleautopublish")
+        .setDescription("Enable or disable auto-publishing for an announcement channel.")
+        .addChannelOption(option =>
+            option.setName("channel")
+                .setDescription("The announcement channel to toggle auto-publishing for.")
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("tgc-forward")
+        .setDescription("Set up message forwarding between two channels.")
+        .addStringOption(option =>
+            option.setName("source_id")
+                .setDescription("Source channel ID (where messages are forwarded from).")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("target_id")
+                .setDescription("Target channel ID (where messages will be sent).")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("color")
+                .setDescription("Embed color (e.g., 'Red', 'Light Blue', 'Green').")
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName("tgc-removeforward")
+        .setDescription("Remove message forwarding from a source channel.")
+        .addStringOption(option =>
+            option.setName("source_id")
+                .setDescription("Source channel ID to remove from forwarding.")
+                .setRequired(true)),
+];
+const Message_Management_Commands = [
+    new SlashCommandBuilder()
+        .setName("tgc-createembed")
+        .setDescription("Start creating an embed message."),
+    new SlashCommandBuilder()
+        .setName("tgc-cancelembed")
+        .setDescription("Cancel the current embed creation session."),
+
+    new SlashCommandBuilder()
+        .setName('tgc-sendmessage')
+        .setDescription('Send a message to a specific channel')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('The channel to send the message to')
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-openticket")
+        .setDescription("opens a support ticket"),
+    new SlashCommandBuilder()
+        .setName("tgc-closeticket")
+        .setDescription("closes a support ticket"),
+    new SlashCommandBuilder()
+        .setName('tgc-setlogchannel')
+        .setDescription('Sets the log channel for this server.')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('Select the log channel')
+                .setRequired(true)
+        ),
+    new SlashCommandBuilder()
+        .setName('tgc-setalertchannel')
+        .setDescription('Sets the channel for new user alerts')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('The channel to send new user alerts to')
+                .setRequired(true)
+        ),
+    new SlashCommandBuilder()
+        .setName("tgc-togglecrates")
+        .setDescription("Toggle crate spawning in a channel")
+        .addChannelOption(option =>
+            option.setName("channel")
+                .setDescription("The channel to toggle crate spawning in")
+                .setRequired(true)),
+];
+const Economy_Commands = [
+    new SlashCommandBuilder()
+        .setName("tgc-balance")
+        .setDescription("Check your currency balance or another user's balance.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user whose balance you want to check.")
+                .setRequired(false)),
+    new SlashCommandBuilder()
+        .setName("tgc-give-currency")
+        .setDescription("Give currency to a user (Admin only).")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user who will receive the currency.")
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName("amount")
+                .setDescription("The amount of currency to give.")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-shop")
+        .setDescription("Opens the interactive shop interface."),
+    new SlashCommandBuilder()
+        .setName("tgc-giftbolts")
+        .setDescription("Give bolts to another user")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user to give bolts to")
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName("amount")
+                .setDescription("Amount of bolts to give")
+                .setRequired(true)
+                .setMinValue(1)),
+    new SlashCommandBuilder()
+        .setName("tgc-inventory")
+        .setDescription("View your inventory or another user's inventory.")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user whose inventory you want to check.")
+                .setRequired(false)),
+    new SlashCommandBuilder()
+        .setName("tgc-additem")
+        .setDescription("Add a new item to the shop (Admin only).")
+        .addStringOption(option =>
+            option.setName("name")
+                .setDescription("The name of the item.")
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName("price")
+                .setDescription("The price of the item in currency.")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("description")
+                .setDescription("A short description of the item.")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("category")
+                .setDescription("The category for this item.")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("image")
+                .setDescription("Optional: Image URL for the item.")
+                .setRequired(false))
+        .addIntegerOption(option =>
+            option.setName("damage_bonus")
+                .setDescription("Damage bonus for this item")
+                .setRequired(false))
+        .addIntegerOption(option =>
+            option.setName("health_bonus")
+                .setDescription("Health bonus for this item")
+                .setRequired(false))
+        .addNumberOption(option =>
+            option.setName("crit_chance_bonus")
+                .setDescription("Critical hit chance bonus for this item")
+                .setRequired(false))
+        .addNumberOption(option =>
+            option.setName("crit_damage_bonus")
+                .setDescription("Critical hit damage bonus for this item")
+                .setRequired(false))
+        .addStringOption(option =>
+            option.setName("event")
+                .setDescription("The event this item belongs to (optional)")
+                .setRequired(false)),
+    new SlashCommandBuilder()
+        .setName("tgc-removeitem")
+        .setDescription("Remove an item from the shop (Admin only).")
+        .addStringOption(option =>
+            option.setName("name")
+                .setDescription("The name of the item to remove.")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-setprice")
+        .setDescription("Set or change the price of an item (Admin only).")
+        .addStringOption(option =>
+            option.setName("item")
+                .setDescription("The name of the item.")
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName("new_price")
+                .setDescription("The new price of the item.")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-giveitem")
+        .setDescription("Give an item to a user manually (Admin only).")
+        .addUserOption(option =>
+            option.setName("user")
+                .setDescription("The user who will receive the item.")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("item")
+                .setDescription("The name of the item to give.")
+                .setRequired(true)
+                .setAutocomplete(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-equip")
+        .setDescription("Equip or unequip an item from your inventory")
+        .addStringOption(option =>
+            option.setName("item")
+                .setDescription("The name of the item to equip/unequip")
+                .setRequired(true)
+                .setAutocomplete(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-sell")
+        .setDescription("Sell an item from your inventory")
+        .addStringOption(option =>
+            option.setName("item")
+                .setDescription("The item you want to sell")
+                .setRequired(true)
+                .setAutocomplete(true)),
+    new SlashCommandBuilder()
+        .setName('tgc-createevent')
+        .setDescription('Create a new event')
+        .addStringOption(option =>
+            option.setName('name')
+                .setDescription('The name of the event')
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('tgc-startevent')
+        .setDescription('Start an existing event')
+        .addStringOption(option =>
+            option.setName('name')
+                .setDescription('The name of the event')
+                .setRequired(true)
+                .setAutocomplete(true))
+        .addIntegerOption(option =>
+            option.setName('duration')
+                .setDescription('Override event duration (in days, optional)')
+                .setMinValue(1)
+                .setRequired(false))
+        .addChannelOption(option =>
+            option.setName('announce-channel')
+                .setDescription('Channel to announce the event start (optional)')
+                .setRequired(false)
+                .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+
+    new SlashCommandBuilder()
+        .setName('tgc-endevent')
+        .setDescription('End an Active event')
+        .addStringOption(option =>
+            option.setName('name')
+                .setDescription('The name of the event')
+                        .setRequired(true)
+                        .setAutocomplete(true))
+];
+const Fun_Commands = [
+    new SlashCommandBuilder()
+        .setName("tgc-deathbattle")
+        .setDescription("Challenge another player to a death battle!")
+        .addUserOption(option =>
+            option.setName("opponent")
+                .setDescription("The player you want to challenge")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-8ball")
+        .setDescription("Ask the magic 8-ball a question.")
+        .addStringOption(option =>
+            option.setName("question")
+                .setDescription("Your yes/no question.")
+                .setRequired(true)),
+    new SlashCommandBuilder()
+        .setName("tgc-battleleaderboard")
+        .setDescription("View the top players in Death Battle."),
+];
+const Gambling_Commands = [
+    new SlashCommandBuilder()
+        .setName("tgc-slots")
+        .setDescription("Gamble your bolts on the slot machine.")
+        .addIntegerOption(option =>
+            option.setName("amount")
+                .setDescription("Enter the amount of bolts you want to bet.")
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("tgc-roulette")
+        .setDescription("Gamble your bolts on the roulette wheel.")
+        .addIntegerOption(option =>
+            option.setName("amount")
+                .setDescription("Enter the amount of bolts you want to bet.")
+                .setRequired(true)),
+];
+const allcommands = [
+    ...Leveling_Commands,
+    ...Moderator_Commands,
+    ...Forwarding_Commands,
+    ...Message_Management_Commands,
+    ...Economy_Commands,
+    ...Fun_Commands,
+    ...Gambling_Commands
+];
+// Register Commands
+async function registerCommands() {
+    if (!process.env.CLIENT_ID) {
+        throw new Error('CLIENT_ID is not defined in environment variables');
+    }
+
+    if (!allcommands || !Array.isArray(allcommands) || allcommands.length === 0) {
+        throw new Error('No commands found to register');
+    }
+
+    try {
+        // Suppress detailed logging
+        console.log('🔄 Registering commands...');
+
+        // Register commands silently
+        await rest.put(
+            Routes.applicationCommands(process.env.CLIENT_ID),
+            {
+                body: allcommands.map(command => command.toJSON())
+            }
+        ).catch(error => {
+            throw new Error(`Failed to register commands: ${error.message}`);
+        });
+
+        // Only log categories
+        console.log('\n📊 Registered Command Categories:');
+        console.log('• Leveling_Commands');
+        console.log('• Moderator_Commands');
+        console.log('• Forwarding_Commands');
+        console.log('• Message_Management_Commands');
+        console.log('• Economy_Commands');
+        console.log('• Fun_Commands');
+        console.log('• Gambling_Commands');
+
+    } catch (error) {
+        console.error('❌ Registration error:', error.message);
+        throw error;
+    }
+}
+// Silent execution
+(async () => {
+    try {
+        await registerCommands();
+    } catch (error) {
+        console.error('🚨 Fatal registration error');
+    }
+})();
+
+// Set max listeners to avoid warning
+client.setMaxListeners(100);
+// Optional: Monitor warning events
+process.on('warning', (warning) => {
+    if (warning.name === 'MaxListenersExceededWarning') {
+        console.warn('⚠️ Maximum listeners warning:', warning.message);
+    }
+});
+
+// ===============================
+//        XP & Leveling
+// ===============================
+// Separate role management function for better organization
+async function handleRoleUpdates(message, newLevel, getLevelRoles) {
+    const member = message.member;
+    if (!member) return;
+
+    const roles = getLevelRoles.all(message.guild.id)
+        .sort((a, b) => a.level - b.level);
+
+    if (roles.length === 0) return;
+
+    // Find the highest role the user qualifies for
+    let highestQualifyingRole = null;
+    const rolesToRemove = new Set();
+
+    for (const { level, role_id } of roles) {
+        const role = message.guild.roles.cache.get(role_id);
+        if (!role) continue;
+
+        if (newLevel >= level) {
+            highestQualifyingRole = role;
+        } else {
+            rolesToRemove.add(role);
+        }
+    }
+
+    try {
+        // Remove old roles and add new role in a single operation
+        const roleUpdates = [];
+
+        if (rolesToRemove.size > 0) {
+            roleUpdates.push(member.roles.remove([...rolesToRemove]));
+        }
+
+        if (highestQualifyingRole && !member.roles.cache.has(highestQualifyingRole.id)) {
+            roleUpdates.push(member.roles.add(highestQualifyingRole));
+        }
+
+        await Promise.all(roleUpdates);
+    } catch (error) {
+        console.error('Error updating roles:', error);
+    }
+}
+// Function to handle level-up notifications
+async function handleLevelUp(userId, guildId, newLevel) {
+    try {
+        // Fetch the set level-up notification channel
+        const levelUpChannelData = db.prepare("SELECT channel_id FROM level_up_notifications WHERE guild_id = ?").get(guildId);
+
+        if (!levelUpChannelData) return; // No channel set
+
+        // Fetch the channel dynamically if not cached
+        let levelUpChannel = client.channels.cache.get(levelUpChannelData.channel_id);
+        if (!levelUpChannel) {
+            try {
+                levelUpChannel = await client.channels.fetch(levelUpChannelData.channel_id);
+            } catch (error) {
+                console.error(`Failed to fetch level-up channel for guild ${guildId}:`, error);
+                return;
+            }
+        }
+
+        if (!levelUpChannel) return;
+
+        // Fetch the user dynamically if not cached
+        let user = client.users.cache.get(userId);
+        if (!user) {
+            try {
+                user = await client.users.fetch(userId);
+            } catch (error) {
+                console.error(`Failed to fetch user ${userId}:`, error);
+                return;
+            }
+        }
+
+        // Determine the clue text
+        let clueText = "";
+        if (newLevel === 5) {
+            clueText = "\n\n🔍 *You hear faint ticking in the distance... but from where?*";
+        } else if (newLevel === 10) {
+            clueText = "\n\n🔍 *As you grow stronger, you begin to sense secrets hidden within the Great Clock...*";
+        } else if (newLevel === 15) {
+            clueText = "\n\n🔍 *A whisper echoes: 'The clock reveals...'*";
+        } else if (newLevel === 20) {
+            clueText = "\n\n🔍 *The gears of fate turn... but who controls them?*";
+        } else if (newLevel === 25) {
+            clueText = "\n\n🔍 *You glimpse a vision of a vast mechanism, stretching beyond time itself...*";
+        } else if (newLevel === 30) {
+            clueText = "\n\n🔍 *The ticking grows louder. Something— or someone— is watching.*";
+        } else if (newLevel === 35) {
+            clueText = "\n\n🔍 *Symbols flicker before your eyes, written in an ancient script you do not understand... yet.*";
+        } else if (newLevel === 40) {
+            clueText = "\n\n🔍 *A gloved hand reaches for the controls. Do they guide time, or merely observe it?*";
+        } else if (newLevel === 45) {
+            clueText = "\n\n🔍 *A distant chime reverberates through the void. It is a warning... or a summons?*";
+        } else if (newLevel === 50) {
+            clueText = "\n\n🔍 *You feel you're close to uncovering a great secret. Perhaps the clock knows more...*";
+        } else if (newLevel === 55) {
+            clueText = "\n\n🔍 *The gears shift, grinding against time itself. Are they resisting... or obeying?*";
+        } else if (newLevel === 60) {
+            clueText = "\n\n🔍 *An unseen force tugs at you, pulling you toward the core of the Great Clock...*";
+        } else if (newLevel === 65) {
+            clueText = "\n\n🔍 *A rift in time flickers open for a split second. You see... yourself?*";
+        } else if (newLevel === 70) {
+            clueText = "\n\n🔍 *A new path reveals itself, spiraling infinitely. You are not the first to walk it.*";
+        } else if (newLevel === 75) {
+            clueText = "\n\n🔍 *The name Orvus lingers in your mind. Who was he? What did he leave behind?*";
+        } else if (newLevel === 80) {
+            clueText = "\n\n🔍 *A golden glow surrounds you briefly before fading. The Clock acknowledges your progress.*";
+        } else if (newLevel === 85) {
+            clueText = "\n\n🔍 *A shadow moves between the gears. Is it a trick of the light, or something more?*";
+        } else if (newLevel === 90) {
+            clueText = "\n\n🔍 *The machinery slows for a heartbeat— as if waiting for you to act.*";
+        } else if (newLevel === 95) {
+            clueText = "\n\n🔍 *The answer is close. The gears align. One final step remains...*";
+        } else if (newLevel === 100) {
+            clueText = "\n\n🔍 *The Clock reveals its final secret. Time bends to your will. What will you do with it?*";
+        }
+
+        // 🎉 Level-Up Embed
+        const embed = new EmbedBuilder()
+            .setTitle("🎉 Level Up!")
+            .setDescription(`Congratulations <@${userId}>! You've reached **Level ${newLevel}!** 🚀${clueText}`)
+            .setColor("#00FF00")
+            .setThumbnail(user?.displayAvatarURL() || null)
+            .setFooter({ text: "Keep chatting to level up more!" });
+
+        // Send the notification
+        await levelUpChannel.send({ content: `<@${userId}>`, embeds: [embed] }).catch(console.error);
+
+    } catch (error) {
+        console.error(`Error handling level-up for user ${userId} in guild ${guildId}:`, error);
+    }
+}
+// Calculate total XP required for a specific level
+function calculateTotalXpForLevel(level, baseXp, multiplier) {
+    if (level <= 0) return 0;
+
+    let totalXp = 0;
+    // Start from level 0 to level-1 to get the correct XP for the desired level
+    for (let i = 0; i < level; i++) {
+        totalXp += Math.ceil(baseXp * Math.pow(multiplier, i));
+    }
+    return totalXp;
+}
+// Helper function to create progress bar
+function createProgressBar(ratio) {
+    const length = 15;
+    const filled = Math.round(ratio * length);
+    const empty = length - filled;
+    return `${'■'.repeat(filled)}${'□'.repeat(empty)}`;
+}
+// In-memory cooldown map
+const xpCooldowns = new Map();
+// Function to calculate level based on XP
 function calculateLevel(xp, baseXp, multiplier) {
     let level = 1;
     let xpForCurrentLevel = baseXp; // Start with base XP for level 1
@@ -254,687 +1036,74 @@ function calculateLevel(xp, baseXp, multiplier) {
 
     return level;
 }
-// Commands
-const commands = [
-        // ===============================
-        // ⚡ XP & Leveling Commands
-        // ===============================
-        new SlashCommandBuilder()
-            .setName("tgc-profile")
-            .setDescription("View your profile or another user's profile.")
-            .addUserOption(option =>
-                option.setName("user")
-                    .setDescription("The user whose profile you want to view.")
-                    .setRequired(false)),
-        new SlashCommandBuilder()
-            .setName("setlevelchannel")
-            .setDescription("Set the channel where level-up notifications are sent.")
-            .addChannelOption(option =>
-                option.setName("channel")
-                    .setDescription("Select the level-up notification channel.")
-                    .setRequired(true)
-                    .addChannelTypes(ChannelType.GuildText)),
+// XP Tracking
+client.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.guild) return;
 
-        new SlashCommandBuilder()
-            .setName("tgc-setxp")
-            .setDescription("Set a user's global XP or level manually.")
-            .addUserOption(option =>
-                option.setName("user")
-                    .setDescription("The user whose global XP or level you want to set.")
-                    .setRequired(true))
-            .addIntegerOption(option =>
-                option.setName("xp")
-                    .setDescription("The global XP amount to set."))
-            .addIntegerOption(option =>
-                option.setName("level")
-                    .setDescription("The level to set (overrides XP).")),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-setbasexp")
-            .setDescription("Set the base XP value for leveling.")
-            .addIntegerOption(option =>
-                option.setName("value")
-                    .setDescription("The new base XP value.")
-                    .setRequired(true)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-setmultiplier")
-            .setDescription("Set the XP multiplier for leveling.")
-            .addNumberOption(option =>
-                option.setName("value")
-                    .setDescription("The multiplier (default: 1.2).")
-                    .setRequired(true)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-setlevelrole")
-            .setDescription("Set a role to be applied when a user reaches a specific level.")
-            .addIntegerOption(option =>
-                option.setName("level")
-                    .setDescription("The level at which the role will be applied.")
-                    .setRequired(true))
-            .addRoleOption(option =>
-                option.setName("role")
-                    .setDescription("The role to assign.")
-                    .setRequired(true)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-importuserdata")
-            .setDescription("Import user data from a JSON file to update XP.")
-            .addAttachmentOption(option =>
-                option.setName("file")
-                    .setDescription("The JSON file to import user data from.")
-                    .setRequired(true)),
-        new SlashCommandBuilder()
-                .setName("tgc-xpleaderboard")
-                .setDescription("View the top XP leaderboard."),
-                    
-        new SlashCommandBuilder()
-                .setName("tgc-battleleaderboard")
-                .setDescription("View the top players in Death Battle."),
-    
-        // ===============================
-        // 🔧 Moderation & Management Commands
-        // ===============================
-new SlashCommandBuilder()
-    .setName("tgc-ban")
-    .setDescription("Globally ban a user.")
-    .addUserOption(option =>
-        option.setName("user")
-            .setDescription("The user to ban.")
-            .setRequired(true))
-    .addStringOption(option =>
-        option.setName("reason")
-            .setDescription("Reason for the ban.")
-            .setRequired(false))
-    .addIntegerOption(option =>
-        option.setName("days")
-            .setDescription("Number of days for the ban duration.")
-            .setMinValue(0)
-            .setRequired(false))
-    .addIntegerOption(option =>
-        option.setName("hours")
-            .setDescription("Number of hours for the ban duration.")
-            .setMinValue(0)
-            .setRequired(false))
-    .addIntegerOption(option =>
-        option.setName("minutes")
-            .setDescription("Number of minutes for the ban duration.")
-            .setMinValue(0)
-            .setRequired(false))
-    .addIntegerOption(option =>
-        option.setName("delete_messages")
-            .setDescription("Delete messages from the last X days (0-14).")
-            .setMinValue(0)
-            .setMaxValue(14)
-            .setRequired(false)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-kick")
-            .setDescription("Globally kick a user.")
-            .addUserOption(option =>
-                option.setName("user")
-                    .setDescription("The user to kick.")
-                    .setRequired(true))
-            .addStringOption(option =>
-                option.setName("reason")
-                    .setDescription("Reason for the kick.")
-                    .setRequired(false)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-banlist")
-            .setDescription("View the list of globally banned users."),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-unban")
-            .setDescription("Search and unban users.")
-            .addStringOption(option =>
-                option.setName("search")
-                    .setDescription("Search by username or ID")
-                    .setRequired(true)
-            ),
+    const userId = message.author.id;
+    const guildId = message.guild.id;
+    const now = Date.now();
 
-        new SlashCommandBuilder()
-            .setName("tgc-timeout")
-            .setDescription("Timeout a user across all servers.")
-            .addUserOption(option =>
-                option.setName("user")
-                    .setDescription("The user to timeout.")
-                    .setRequired(true))
-            .addStringOption(option =>
-                option.setName("duration")
-                    .setDescription("Timeout duration (e.g., 1d 2h 30m) or 0 to remove.")
-                    .setRequired(true))
-            .addStringOption(option =>
-                option.setName("reason")
-                    .setDescription("Reason for the timeout.")
-                    .setRequired(false)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-lock")
-            .setDescription("Locks or unlocks a channel (toggle).")
-            .addChannelOption(option => 
-                option.setName("channel")
-                    .setDescription("The channel to lock/unlock.")
-                    .setRequired(true)),
-        new SlashCommandBuilder()
-            .setName('tgc-managecommandroles')
-            .setDescription('Manage roles that can use TGC commands')
-            .addStringOption(option =>
-                option.setName('action')
-                    .setDescription('Choose whether to add or remove a role')
-                    .setRequired(true)
-                    .addChoices(
-                        { name: 'Add Role', value: 'add' },
-                        { name: 'Remove Role', value: 'remove' }
-                    )
-            )
-            .addRoleOption(option =>
-                option.setName('role')
-                    .setDescription('The role to add or remove')
-                    .setRequired(true)
-            )
-            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-           
-            new SlashCommandBuilder()
-    .setName("purge")
-    .setDescription("Delete all messages from a user in the server.")
-    .addUserOption(option => 
-        option.setName("user")
-        .setDescription("The user whose messages will be deleted")
-        .setRequired(true))
-    .addChannelOption(option =>
-        option.setName("channel")
-        .setDescription("The channel to purge messages from (optional)")
-        .setRequired(false)),
-        new SlashCommandBuilder()
-        .setName("tgc-strike")
-        .setDescription("Give a user a strike.")
-        .addUserOption(option =>
-            option.setName("user")
-                .setDescription("User to give a strike to")
-                .setRequired(true))
-        .addStringOption(option =>
-            option.setName("reason")
-                .setDescription("Reason for the strike")
-                .setRequired(false)),
-    
-    new SlashCommandBuilder()
-        .setName("tgc-checkstrikes")
-        .setDescription("Check a user's strikes.")
-        .addUserOption(option =>
-            option.setName("user")
-                .setDescription("User to check")
-                .setRequired(true)),
-    
-    new SlashCommandBuilder()
-        .setName("tgc-removestrike")
-        .setDescription("Remove a specific strike from a user.")
-        .addUserOption(option =>
-            option.setName("user")
-                .setDescription("User to remove a strike from")
-                .setRequired(true))
-        .addIntegerOption(option =>
-            option.setName("strike")
-                .setDescription("Strike number to remove")
-                .setRequired(true)),
-    
-    new SlashCommandBuilder()
-        .setName("tgc-resetstrikes")
-        .setDescription("Reset all strikes for a user.")
-        .addUserOption(option =>
-            option.setName("user")
-                .setDescription("User to reset strikes for")
-                .setRequired(true)),
-
-        // ===============================
-        // 📩 Message Management Commands
-        // ===============================
-        new SlashCommandBuilder()
-            .setName("tgc-createembed")
-            .setDescription("Start creating an embed message."),
-        new SlashCommandBuilder()
-        .setName("tgc-cancelembed")
-        .setDescription("Cancel the current embed creation session."),
-
-        new SlashCommandBuilder()
-            .setName("tgc-sendmessage")
-            .setDescription("Sends a normal text message using a modal.")
-            .addChannelOption(option => 
-                option.setName("channel")
-                    .setDescription("The channel to send the message in.")
-                    .setRequired(true)),
-        new SlashCommandBuilder ()
-                .setName ("tgc-openticket")
-                .setDescription ("opens a support ticket"),
-        new SlashCommandBuilder ()
-                .setName ("tgc-closeticket")
-                .setDescription ("closes a support ticket"),
-        new SlashCommandBuilder()
-                .setName('tgc-setlogchannel')
-                .setDescription('Sets the log channel for this server.')
-                .addChannelOption(option =>
-                    option.setName('channel')
-                        .setDescription('Select the log channel')
-                        .setRequired(true)
-                ),
-        new SlashCommandBuilder()
-                .setName('tgc-setalertchannel')
-                .setDescription('Sets the channel for new user alerts')
-                .addChannelOption(option =>
-                    option.setName('channel')
-                        .setDescription('The channel to send new user alerts to')
-                        .setRequired(true)
-                ),
-        new SlashCommandBuilder()
-                .setName("tgc-togglecrates")
-                .setDescription("Toggle crate spawning in a channel")
-                .addChannelOption(option => 
-                    option.setName("channel")
-                    .setDescription("The channel to toggle crate spawning in")
-                    .setRequired(true)),
-
-        // ===============================
-        // 📢 Auto-Publishing & Forwarding Commands
-        // ===============================
-        new SlashCommandBuilder()
-            .setName("tgc-toggleautopublish")
-            .setDescription("Enable or disable auto-publishing for an announcement channel.")
-            .addChannelOption(option =>
-                option.setName("channel")
-                    .setDescription("The announcement channel to toggle auto-publishing for.")
-                    .setRequired(true)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-forward")
-            .setDescription("Set up message forwarding between two channels.")
-            .addStringOption(option =>
-                option.setName("source_id")
-                    .setDescription("Source channel ID (where messages are forwarded from).")
-                    .setRequired(true))
-            .addStringOption(option =>
-                option.setName("target_id")
-                    .setDescription("Target channel ID (where messages will be sent).")
-                    .setRequired(true))
-            .addStringOption(option =>
-                option.setName("color")
-                    .setDescription("Embed color (e.g., 'Red', 'Light Blue', 'Green').")
-                    .setRequired(false)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-removeforward")
-            .setDescription("Remove message forwarding from a source channel.")
-            .addStringOption(option =>
-                option.setName("source_id")
-                    .setDescription("Source channel ID to remove from forwarding.")
-                    .setRequired(true)),
-    
-        // ===============================
-        // 🎮 Fun Commands
-        // ===============================
-        new SlashCommandBuilder()
-            .setName("tgc-deathbattle")
-            .setDescription("Start a death battle between two users!")
-            .addUserOption(option =>
-                option.setName("fighter1")
-                    .setDescription("First fighter.")
-                    .setRequired(true))
-            .addUserOption(option =>
-                option.setName("fighter2")
-                    .setDescription("Second fighter.")
-                    .setRequired(true)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-8ball")
-            .setDescription("Ask the magic 8-ball a question.")
-            .addStringOption(option =>
-                option.setName("question")
-                    .setDescription("Your yes/no question.")
-                    .setRequired(true)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-randomquote")
-            .setDescription("Fetches a random quote from the database."),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-addquote")
-            .setDescription("Adds a new quote to the database using a modal."),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-listquotes")
-            .setDescription("Lists all stored quotes with IDs."),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-deletequote")
-            .setDescription("Deletes a quote from the database.")
-            .addIntegerOption(option =>
-                option.setName("id")
-                    .setDescription("The ID of the quote to delete.")
-                    .setRequired(true)),
-
-        // ===============================
-        // 💰 Economy & Shop Command
-        // ===============================
-        
-        new SlashCommandBuilder()
-            .setName("tgc-balance")
-            .setDescription("Check your currency balance or another user's balance.")
-            .addUserOption(option => 
-                option.setName("user")
-                .setDescription("The user whose balance you want to check.")
-                .setRequired(false)),
-
-        new SlashCommandBuilder()
-            .setName("tgc-give-currency")
-            .setDescription("Give currency to a user (Admin only).")
-            .addUserOption(option => 
-                option.setName("user")
-                .setDescription("The user who will receive the currency.")
-                .setRequired(true))
-            .addIntegerOption(option => 
-                option.setName("amount")
-                .setDescription("The amount of currency to give.")
-                .setRequired(true)),
-        new SlashCommandBuilder()
-            .setName("tgc-shop")
-            .setDescription("Opens the interactive shop interface."),
-
-        new SlashCommandBuilder()
-            .setName("tgc-inventory")
-            .setDescription("View your inventory or another user's inventory.")
-            .addUserOption(option => 
-                option.setName("user")
-                .setDescription("The user whose inventory you want to check.")
-                .setRequired(false)),
-        new SlashCommandBuilder()
-            .setName("tgc-additem")
-            .setDescription("Add a new item to the shop (Admin only).")
-            .addStringOption(option => 
-                option.setName("name")
-                .setDescription("The name of the item.")
-                .setRequired(true))
-            .addIntegerOption(option => 
-                option.setName("price")
-                .setDescription("The price of the item in currency.")
-                .setRequired(true))
-            .addStringOption(option => 
-                option.setName("description")
-                .setDescription("A short description of the item.")
-                .setRequired(true))
-            .addStringOption(option => 
-                option.setName("category")
-                .setDescription("The category for this item.")
-                .setRequired(true))
-            .addStringOption(option =>
-                option.setName("image")
-                .setDescription("Optional: Image URL for the item.")
-                .setRequired(false))
-            .addIntegerOption(option => 
-                    option.setName("damage_bonus")
-                    .setDescription("Damage bonus for this item")
-                    .setRequired(false))
-            .addIntegerOption(option => 
-                    option.setName("health_bonus")
-                    .setDescription("Health bonus for this item")
-                    .setRequired(false))
-            .addNumberOption(option => 
-                    option.setName("crit_chance_bonus")
-                    .setDescription("Critical hit chance bonus for this item")
-                    .setRequired(false))
-            .addNumberOption(option => 
-                    option.setName("crit_damage_bonus")
-                    .setDescription("Critical hit damage bonus for this item")
-                    .setRequired(false))
-            .addStringOption(option => 
-                option.setName("event")
-                    .setDescription("The event this item belongs to (optional)")
-                    .setRequired(false)),
-
-        new SlashCommandBuilder()
-            .setName("tgc-removeitem")
-            .setDescription("Remove an item from the shop (Admin only).")
-            .addStringOption(option => 
-                option.setName("name")
-                .setDescription("The name of the item to remove.")
-                .setRequired(true)),
-        
-        new SlashCommandBuilder()
-            .setName("tgc-setprice")
-            .setDescription("Set or change the price of an item (Admin only).")
-            .addStringOption(option => 
-                option.setName("item")
-                .setDescription("The name of the item.")
-                .setRequired(true))
-            .addIntegerOption(option => 
-                option.setName("new_price")
-                .setDescription("The new price of the item.")
-                .setRequired(true)),
-        
-            new SlashCommandBuilder()
-            .setName("tgc-giveitem")
-            .setDescription("Give an item to a user manually (Admin only).")
-            .addUserOption(option =>                     
-                option.setName("user")
-                .setDescription("The user who will receive the item.")
-                .setRequired(true))
-            .addStringOption(option => 
-                option.setName("item")
-               .setDescription("The name of the item to give.")
-               .setRequired(true)
-                .setAutocomplete(true)),
-            
-        new SlashCommandBuilder()
-        .setName("tgc-equip")
-        .setDescription("Equip or unequip an item from your inventory")
-        .addStringOption(option =>
-            option.setName("item")
-                .setDescription("The name of the item to equip/unequip")
-                .setRequired(true)),
-
-        // ===============================
-        // Gambling Commands
-        // ===============================
-        new SlashCommandBuilder()
-            .setName("tgc-slots")
-            .setDescription("Gamble your bolts on the slot machine.")
-            .addIntegerOption(option =>
-                option.setName("amount")
-                    .setDescription("Enter the amount of bolts you want to bet.")
-                    .setRequired(true)),
-    
-        new SlashCommandBuilder()
-            .setName("tgc-roulette")
-            .setDescription("Gamble your bolts on the roulette wheel.")
-            .addIntegerOption(option =>
-                option.setName("amount")
-                    .setDescription("Enter the amount of bolts you want to bet.")
-                    .setRequired(true)),
-
-        new SlashCommandBuilder()
-            .setName('tgc-createevent')
-            .setDescription('Create a new event')
-            .addStringOption(option =>
-                option.setName('name')
-                    .setDescription('The name of the event')
-                    .setRequired(true)),
-                
-        new SlashCommandBuilder()
-            .setName('tgc-startevent')
-            .setDescription('Start an existing event')
-            .addStringOption(option =>
-                option.setName('name')
-                    .setDescription('The name of the event')
-                    .setRequired(true)
-                    .setAutocomplete(true))
-            .addIntegerOption(option =>
-                option.setName('duration')
-                    .setDescription('Override event duration (in days, optional)')
-                    .setMinValue(1)
-                    .setRequired(false))
-            .addChannelOption(option =>
-                option.setName('announce-channel')
-                    .setDescription('Channel to announce the event start (optional)')
-                    .setRequired(false)
-                    .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
-                
-        new SlashCommandBuilder()
-            .setName('tgc-endevent')
-            .setDescription('End an Active event')
-            .addStringOption(option =>
-                option.setName('name')
-                        .setDescription('The name of the event')
-                        .setRequired(true)
-                        .setAutocomplete(true))
-];
-
-// Register Commands
-async function registerCommands() {
-    if (!process.env.CLIENT_ID) {
-        throw new Error('CLIENT_ID is not defined in environment variables');
-    }
-
-    if (!commands || !Array.isArray(commands) || commands.length === 0) {
-        throw new Error('No commands found to register');
-    }
+    // Early cooldown check
+    if (xpCooldowns.has(userId) && now - xpCooldowns.get(userId) < 60000) return;
+    xpCooldowns.set(userId, now);
 
     try {
-        console.log('🔄 Starting command registration...');
-        
-        // Validate each command before registration
-        commands.forEach((command, index) => {
-            if (!command.name || !command.description) {
-                throw new Error(`Invalid command at index ${index}: Missing name or description`);
-            }
-        });
+        // Use prepared statements for frequently used queries
+        const getSettings = db.prepare(`
+            SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
+        `);
+        const updateXP = db.prepare(`
+            INSERT INTO user_xp (user_id, xp)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET xp = xp + excluded.xp
+        `);
+        const getUserXP = db.prepare(`
+            SELECT xp FROM user_xp WHERE user_id = ?
+        `);
+        const getLevelRoles = db.prepare(`
+            SELECT level, role_id FROM level_roles WHERE guild_id = ?
+        `);
 
-        // Register commands with Discord API
-        const response = await rest.put(
-            Routes.applicationCommands(process.env.CLIENT_ID),
-            { 
-                body: commands.map(command => command.toJSON()) 
-            }
-        );
+        // Fetch settings and validate
+        const settings = getSettings.get() || { base_xp: 300, multiplier: 1.2 };
+        const { base_xp: baseXp, multiplier } = settings;
 
-        if (!response) {
-            throw new Error('Failed to receive response from Discord API');
+        if (!baseXp || !multiplier) {
+            throw new Error("Invalid base XP or multiplier settings");
         }
 
-        console.log('✅ Commands registered successfully!');
-        console.log(`📊 Total commands registered: ${commands.length}`);
-        
-        // Log individual command names
-        commands.forEach(command => {
-            console.log(`  • ${command.name}`);
-        });
+        // XP calculations
+        const xpGain = Math.floor(Math.random() * 16 + 5); // Simplified random range (5-20)
+        const userData = getUserXP.get(userId);
+        const oldXp = userData?.xp || 0;
+        const oldLevel = calculateLevel(oldXp, baseXp, multiplier);
+
+        // Update XP in a single transaction
+        db.transaction(() => {
+            updateXP.run(userId, xpGain);
+            const newXpData = getUserXP.get(userId);
+            const newLevel = calculateLevel(newXpData.xp, baseXp, multiplier);
+
+            // Handle level up if needed
+            if (newLevel > oldLevel) {
+                handleLevelUp(userId, guildId, newLevel);
+            }
+
+            // Role management
+            handleRoleUpdates(message, newLevel, getLevelRoles);
+        })();
+
+        // Minimal logging
+        console.log(`${message.author.username}: +${xpGain}XP, Total: ${(oldXp + xpGain).toFixed(2)}, Level: ${calculateLevel(oldXp + xpGain, baseXp, multiplier)}`);
 
     } catch (error) {
-        console.error('❌ Failed to register commands:', error);
-        
-        // Specific error handling
-        if (error.code === 50035) {
-            console.error('Invalid command format detected');
-        } else if (error.code === 50001) {
-            console.error('Bot lacks permissions to register commands');
-        }
-
-        // Rethrow error for upstream handling
-        throw error;
-    }
-}
-
-// Execute registration with proper error handling
-(async () => {
-    try {
-        await registerCommands();
-    } catch (error) {
-        console.error('🚨 Fatal error during command registration:', error);
-        // Optionally exit process on fatal error
-        // process.exit(1);
-    }
-})();
-
-// Add cleanup for graceful shutdown
-process.on('SIGINT', () => {
-    console.log('👋 Received SIGINT. Cleaning up...');
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    console.log('👋 Received SIGTERM. Cleaning up...');
-    process.exit(0);
-});
-
-client.setMaxListeners(70);
-// Optional: Monitor warning events
-process.on('warning', (warning) => {
-    if (warning.name === 'MaxListenersExceededWarning') {
-        console.warn('⚠️ Maximum listeners warning:', warning.message);
+        console.error('Error in XP tracking:', error);
     }
 });
-
-// ===============================
-//        XP & Leveling
-// ===============================
-
-// Command Handling
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isCommand()) return;
-
-    const { commandName } = interaction;
-
-    if (commandName === 'tgc-setbasexp') {
-        const baseXp = interaction.options.getInteger('value');
-        const guildId = interaction.guild?.id;
-    
-        // Ensure the command is being used in a guild
-        if (!guildId) {
-            return interaction.reply({
-                content: 'This command can only be used in a server.',
-                flags: 64
-            });
-        }
-    
-        // Permission Check
-        if (!checkCommandPermission(interaction)) {
-            return interaction.reply({
-                content: 'You do not have permission to use this command.',
-                flags: 64
-            });
-        }
-    
-        ensureGuildSettings(guildId);
-    
-        try {
-            db.prepare(`
-                UPDATE guild_settings SET base_xp = ? WHERE guild_id = ?
-            `).run(baseXp, guildId);
-    
-            await interaction.reply({
-                embeds: [new EmbedBuilder()
-                    .setTitle('Base XP Updated ✅')
-                    .setDescription(`Base XP set to **${baseXp}**.`)
-                    .setColor('#00FF00')],
-            });
-        } catch (error) {
-            console.error('Error updating Base XP:', error);
-            await interaction.reply({
-                content: 'Failed to update Base XP.',
-                flags: 64
-            });
-        }
-    }
-    
-
-    if (commandName === 'tgc-setmultiplier') {
-        const multiplier = interaction.options.getNumber('value');
-        const guildId = interaction.guild?.id;
-
-    // Ensure the command is being used in a guild
-    if (!guildId) {
-        return interaction.reply({
-            content: 'This command can only be used in a server.',
-            flags: 64
-        });
-    }
+// Set Level-Up Notification Channel Command
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "setlevelchannel") return;
 
     // Permission Check
     if (!checkCommandPermission(interaction)) {
@@ -942,329 +1111,6 @@ client.on('interactionCreate', async (interaction) => {
             content: 'You do not have permission to use this command.',
             flags: 64
         });
-    }
-
-    ensureGuildSettings(guildId);
-    
-        try {
-            db.prepare(`
-                UPDATE guild_settings SET multiplier = ? WHERE guild_id = ?
-            `).run(multiplier, guildId);
-    
-            await interaction.reply({
-                embeds: [new EmbedBuilder()
-                    .setTitle('Multiplier Updated ✅')
-                    .setDescription(`Multiplier updated to **${multiplier}**.`)
-                    .setColor('#00FF00')],
-            });
-        } catch (error) {
-            console.error('Error updating multiplier:', error);
-            await interaction.reply({
-                content: 'Failed to update multiplier.',
-                flags: 64
-            });
-        }
-    }
-    
-
-    if (commandName === 'tgc-setxp') {
-        const user = interaction.options.getUser('user');
-        const xp = interaction.options.getInteger('xp');
-        const level = interaction.options.getInteger('level');
-        const guildId = interaction.guild?.id;
-
-        // Ensure the command is being used in a guild
-        if (!guildId) {
-            return interaction.reply({
-                content: 'This command can only be used in a server.',
-                flags: 64
-            });
-        }
-    
-        // Permission Check
-        if (!checkCommandPermission(interaction)) {
-            return interaction.reply({
-                content: 'You do not have permission to use this command.',
-                flags: 64
-            });
-        }
-    
-        ensureGuildSettings(guildId);
-    
-        try {
-            // Ensure global settings exist
-            ensureGuildSettings();
-    
-            let finalXp = xp;
-    
-            // Fetch global settings for XP and multiplier
-            const settings = db.prepare(`
-                SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
-            `).get();
-    
-            if (!settings) {
-                throw new Error('Global settings not found. Please ensure the guild settings are initialized.');
-            }
-    
-            const { base_xp: baseXp, multiplier } = settings;
-    
-            // If level is provided, calculate the corresponding XP
-            if (level !== null) {
-                if (level <= 0) {
-                    throw new Error('Level must be greater than 0.');
-                }
-                finalXp = calculateTotalXpForLevel(level, baseXp, multiplier);
-            }
-    
-            // Ensure XP is valid
-            if (finalXp === null || finalXp < 0) {
-                throw new Error('Invalid XP value calculated.');
-            }
-    
-            // Update XP in the database
-            db.prepare(`
-                INSERT INTO user_xp (user_id, xp)
-                VALUES (?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET xp = excluded.xp
-            `).run(user.id, finalXp);
-    
-            // Calculate the new level
-            const newLevel = calculateLevel(finalXp, baseXp, multiplier);
-    
-            // Send success response
-            await interaction.reply({
-                embeds: [new EmbedBuilder()
-                    .setTitle('XP Updated ✅')
-                    .setDescription(`Set XP for **${user.username}** to **${finalXp}**.\nCurrent Level: **${newLevel}**.`)
-                    .setColor('#00FF00')],
-                flags: 64
-            });
-        } catch (error) {
-            console.error('Error setting XP:', error);
-    
-            // Send error response
-            await interaction.reply({
-                content: `Failed to set XP. Error: ${error.message}`,
-                flags: 64
-            });
-        }
-    }
-    
-
-    if (commandName === 'tgc-setlevelrole') {
-        const level = interaction.options.getInteger('level');
-        const role = interaction.options.getRole('role');
-        const guildId = interaction.guild?.id;
-
-        // Ensure the command is being used in a guild
-        if (!guildId) {
-            return interaction.reply({
-                content: 'This command can only be used in a server.',
-                flags: 64
-            });
-        }
-    
-        // Permission Check
-        if (!checkCommandPermission(interaction)) {
-            return interaction.reply({
-                content: 'You do not have permission to use this command.',
-                flags: 64
-            });
-        }
-    
-        try {
-            ensureGuildSettings(guildId);
-    
-            db.prepare(`
-                INSERT INTO level_roles (level, guild_id, role_id)
-                VALUES (?, ?, ?)
-                ON CONFLICT(level, guild_id) DO UPDATE SET role_id = excluded.role_id
-            `).run(level, guildId, role.id);
-    
-            await interaction.reply({
-                embeds: [new EmbedBuilder()
-                    .setTitle('Level Role Set ✅')
-                    .setDescription(`Role **${role.name}** will now be assigned at level **${level}**.`)
-                    .setColor('#00FF00')],
-            });
-        } catch (error) {
-            console.error('Error setting level role:', error);
-            await interaction.reply({
-                content: 'Failed to set level role. Please try again later.',
-                flags: 64
-            });
-        }
-    }
-    
-
-    if (commandName === 'tgc-importuserdata') {
-        const fileAttachment = interaction.options.getAttachment('file');
-        const guildId = interaction.guild?.id;
-
-        // Ensure the command is being used in a guild
-        if (!guildId) {
-            return interaction.reply({
-                content: 'This command can only be used in a server.',
-                flags: 64
-            });
-        }
-        
-        ensureGuildSettings(guildId);
-
-    
-        // Permission Check
-        if (!checkCommandPermission(interaction)) {
-            return interaction.reply({
-                content: 'You do not have permission to use this command.',
-                flags: 64
-            });
-        }
-    
-        if (!fileAttachment || !fileAttachment.name.endsWith('.json')) {
-            return interaction.reply({
-                content: 'Please upload a valid JSON file.',
-                flags: 64
-            });
-        }
-    
-        await interaction.reply({ content: 'Processing the file... Please wait.', flags: 64 });
-    
-        try {
-            const response = await fetch(fileAttachment.url);
-            const fileContent = await response.text();
-            const jsonData = JSON.parse(fileContent);
-    
-            if (!jsonData.users) {
-                return interaction.editReply({
-                    content: 'The uploaded file does not contain valid user data.',
-                });
-            }
-    
-            const insertUserXpStmt = db.prepare(`
-                INSERT INTO user_xp (user_id, xp)
-                VALUES (?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET xp = excluded.xp
-            `);
-    
-            // Fetch global settings for XP calculation
-            const { base_xp: baseXp, multiplier } = db.prepare(`
-                SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
-            `).get() || { base_xp: 300, multiplier: 1.2 };
-    
-            let importedCount = 0;
-    
-            for (const userId in jsonData.users) {
-                const userData = jsonData.users[userId];
-                const level = userData.level || 1; // Default to level 1 if not provided
-    
-                // Calculate corresponding XP for the given level
-                const totalXp = calculateTotalXpForLevel(level, baseXp, multiplier);
-    
-                // Insert or update the user's XP in the database
-                insertUserXpStmt.run(userId, totalXp);
-                importedCount++;
-    
-                console.log(`Imported User: ${userId}, Level: ${level}, XP: ${totalXp}`);
-            }
-    
-            await interaction.editReply({
-                embeds: [new EmbedBuilder()
-                    .setTitle('User Data Imported Successfully ✅')
-                    .setDescription(`Imported data for **${importedCount} users**.`)
-                    .setColor('#00FF00')],
-            });
-        } catch (error) {
-            console.error('Error importing user data:', error);
-            await interaction.editReply({
-                content: 'An error occurred while importing the user data. Please try again later.',
-            });
-        }
-    }
-
-    if (commandName === 'tgc-profile') {
-    const targetUser = interaction.options.getUser('user') || interaction.user;
-    const userId = targetUser?.id;
-
-    if (!userId) {
-        return interaction.reply({ content: 'Could not find the specified user.', flags: 64 });
-    }
-
-    try {
-        // Fetch user XP from the database
-        const userXpData = db.prepare(`
-            SELECT xp FROM user_xp WHERE user_id = ?
-        `).get(userId) || { xp: 0 };
-
-        // Fetch global base XP and multiplier
-        const { base_xp: baseXp, multiplier } = db.prepare(`
-            SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
-        `).get() || { base_xp: 300, multiplier: 1.2 };
-
-                // Calculate Level
-        let totalXp = userXpData.xp;
-        let level = calculateLevel(totalXp, baseXp, multiplier);
-
-        // Calculate XP thresholds for current and next level
-        let xpForCurrentLevel = calculateTotalXpForLevel(level - 1, baseXp, multiplier);
-        let xpForNextLevel = calculateTotalXpForLevel(level, baseXp, multiplier);
-
-        // Calculate XP Progress and Required XP
-        const xpProgress = totalXp - xpForCurrentLevel;
-        const xpRequired = xpForNextLevel - xpForCurrentLevel;
-
-
-        // Calculate Progress Bar
-        const progressBarLength = 20;
-        const progressRatio = Math.max(0, Math.min(1, xpProgress / xpRequired)); // Clamp between 0 and 1
-        const progressBarFilled = Math.round(progressRatio * progressBarLength);
-        const progressBarEmpty = progressBarLength - progressBarFilled;
-        const progressBar = '█'.repeat(progressBarFilled) + '░'.repeat(progressBarEmpty);
-
-        // Estimate Messages to Level Up
-        const averageXpPerMessage = 12; // Adjust as needed
-        const messagesToNextLevel = Math.ceil((xpRequired - xpProgress) / averageXpPerMessage);
-
-        // Fetch User Avatar Properly
-        let avatarURL = targetUser.displayAvatarURL ? targetUser.displayAvatarURL({ dynamic: true }) : null;
-        if (!avatarURL) {
-            try {
-                const fetchedUser = await client.users.fetch(userId);
-                avatarURL = fetchedUser.displayAvatarURL({ dynamic: true });
-            } catch (err) {
-                console.error('Failed to fetch user avatar:', err);
-                avatarURL = 'https://cdn.discordapp.com/embed/avatars/0.png'; // Default avatar
-            }
-        }
-
-        // Build Profile Embed
-        const profileEmbed = new EmbedBuilder()
-            .setTitle(`${targetUser.username}'s Profile`)
-            .setDescription(`Level: **${level}**\nTotal XP: **${totalXp.toFixed(2)}**`)
-            .addFields(
-                { name: 'Progress to Next Level', value: `${progressBar} (${xpProgress.toFixed(2)} / ${xpRequired.toFixed(2)} XP)` },
-                { name: 'Messages to Next Level', value: `${messagesToNextLevel} (approx)` }
-            )
-            .setThumbnail(avatarURL)
-            .setColor('#00FF00');
-
-        await interaction.reply({ embeds: [profileEmbed], flags: 64 });
-
-    } catch (error) {
-        console.error('Error generating profile:', error);
-        await interaction.reply({
-            content: 'An error occurred while generating the profile. Please try again later.',
-            flags: 64,
-        });
-    }
-}
-});
-
-// Set Level-Up Notification Channel Command
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== "setlevelchannel") return;
-
-    if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-        return interaction.reply({ content: "❌ You do not have permission to set the level-up notification channel.", flags: 64 });
     }
 
     const channel = interaction.options.getChannel("channel");
@@ -1281,36 +1127,511 @@ client.on("interactionCreate", async (interaction) => {
         flags: 64
     });
 });
+// Command Handling
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isCommand()) return;
 
- // ===============================
- //    Moderation & Management
- // ===============================
+    const { commandName } = interaction;
 
-// Calculate total XP required for a specific level
-function calculateTotalXpForLevel(level, baseXp, multiplier) {
-    if (level <= 0) return 0;
-    
-    let totalXp = 0;
-    for (let i = 1; i <= level; i++) {
-        totalXp += Math.ceil(baseXp * Math.pow(multiplier, i - 1));
+    if (commandName === 'tgc-setbasexp') {
+        const baseXp = interaction.options.getInteger('value');
+        const guildId = interaction.guild?.id;
+
+        // Ensure the command is being used in a guild
+        if (!guildId) {
+            return interaction.reply({
+                content: '❌ This command can only be used in a server.',
+                flags: 64
+            });
+        }
+
+        // Permission Check
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: '❌ You do not have permission to use this command.',
+                flags: 64
+            });
+        }
+
+        // Input validation
+        if (baseXp < 0 || baseXp > 1000) {
+            return interaction.reply({
+                content: '❌ Base XP must be between 0 and 1000.',
+                flags: 64
+            });
+        }
+
+        try {
+        // Ensure guild settings exist
+            ensureGuildSettings(guildId);
+
+            // Get current base XP for comparison
+            const currentBaseXp = db.prepare('SELECT base_xp FROM guild_settings WHERE guild_id = ?')
+                .get(guildId)?.base_xp;
+
+            // Update the base XP
+            db.prepare(`
+            UPDATE guild_settings
+            SET base_xp = ?,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE guild_id = ?
+        `).run(baseXp, guildId);
+
+            // Create response embed
+            const responseEmbed = new EmbedBuilder()
+                .setTitle('Base XP Updated ✅')
+                .setDescription([
+                    `Base XP has been updated successfully.`,
+                    '',
+                    `**Previous Value:** ${currentBaseXp ?? 'Not set'}`,
+                    `**New Value:** ${baseXp}`,
+                    '',
+                    `*This will affect all future XP gains in the server.*`
+                ].join('\n'))
+                .setColor('#00FF00')
+                .setTimestamp();
+
+            // Send success response
+            await interaction.reply({
+                embeds: [responseEmbed],
+                flags: 64
+            });
+
+            // Log the change if log channel is set
+            try {
+                const logChannelId = db.prepare('SELECT log_channel FROM guild_settings WHERE guild_id = ?')
+                    .get(guildId)?.log_channel;
+
+                if (logChannelId) {
+                    const logChannel = await interaction.guild.channels.fetch(logChannelId);
+                    if (logChannel) {
+                        const logEmbed = new EmbedBuilder()
+                            .setTitle('🔧 Base XP Setting Changed')
+                            .setDescription([
+                                `**Changed by:** ${interaction.user.tag}`,
+                                `**Previous Value:** ${currentBaseXp ?? 'Not set'}`,
+                                `**New Value:** ${baseXp}`,
+                                `**Time:** <t:${Math.floor(Date.now() / 1000)}:F>`
+                            ].join('\n'))
+                            .setColor('#FFA500');
+
+                        await logChannel.send({ embeds: [logEmbed] });
+                    }
+                }
+            } catch (logError) {
+                console.error('Error sending log message:', logError);
+                // Don't interrupt the main flow if logging fails
+            }
+
+        } catch (error) {
+            console.error('Error updating Base XP:', error);
+            await interaction.reply({
+                content: '❌ An error occurred while updating the Base XP. Please try again later.',
+                flags: 64
+            });
+        }
     }
-    return totalXp;
-}
 
+    if (commandName === 'tgc-setmultiplier') {
+        const multiplier = interaction.options.getNumber('value');
+        const guildId = interaction.guild?.id;
+
+        // Ensure the command is being used in a guild
+        if (!guildId) {
+            return interaction.reply({
+                content: '❌ This command can only be used in a server.',
+                flags: 64
+            });
+        }
+
+        // Permission Check
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: '❌ You do not have permission to use this command.',
+                flags: 64
+            });
+        }
+
+        // Input validation
+        if (multiplier < 0.1 || multiplier > 5.0) {
+            return interaction.reply({
+                content: '❌ Multiplier must be between 0.1 and 5.0.',
+                flags: 64
+            });
+        }
+
+        try {
+        // Ensure guild settings exist
+            ensureGuildSettings(guildId);
+
+            // Get current multiplier for comparison
+            const currentMultiplier = db.prepare('SELECT multiplier FROM guild_settings WHERE guild_id = ?')
+                .get(guildId)?.multiplier;
+
+            // Update the multiplier
+            db.prepare(`
+            UPDATE guild_settings
+            SET multiplier = ?,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE guild_id = ?
+        `).run(multiplier, guildId);
+
+            // Create response embed
+            const responseEmbed = new EmbedBuilder()
+                .setTitle('XP Multiplier Updated ✅')
+                .setDescription([
+                    `Server XP multiplier has been updated successfully.`,
+                    '',
+                    `**Previous Value:** ${currentMultiplier ?? '1.0'}×`,
+                    `**New Value:** ${multiplier}×`,
+                    '',
+                    `*This will affect all future XP gains in the server.*`
+                ].join('\n'))
+                .setColor('#00FF00')
+                .setTimestamp();
+
+            // Send success response
+            await interaction.reply({
+                embeds: [responseEmbed],
+                flags: 64
+            });
+
+        } catch (error) {
+            console.error('Error updating XP multiplier:', error);
+            await interaction.reply({
+                content: '❌ An error occurred while updating the XP multiplier. Please try again later.',
+                flags: 64
+            });
+        }
+    }
+
+    if (commandName === 'tgc-setxp') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const user = interaction.options.getUser('user');
+        const xp = interaction.options.getInteger('xp');
+        const level = interaction.options.getInteger('level');
+        const guildId = interaction.guild?.id;
+
+        // Early validation checks
+        if (!guildId) {
+            return interaction.editReply('❌ This command can only be used in a server.');
+        }
+
+        if (!checkCommandPermission(interaction)) {
+            return interaction.editReply('❌ You do not have permission to use this command.');
+        }
+
+        if (!user) {
+            return interaction.editReply('❌ Invalid user specified.');
+        }
+
+        if (xp === null && level === null) {
+            return interaction.editReply('❌ You must provide either XP or level.');
+        }
+
+        try {
+            // Constants for XP/Level limits
+            const MAX_LEVEL = 100;
+            const MIN_LEVEL = 1;
+            const MAX_XP = 1_000_000_000;
+            const MIN_XP = 0;
+
+            // Initialize settings
+            await Promise.all([
+                ensureGuildSettings(guildId),
+                ensureGuildSettings('global')
+            ]);
+
+            // Get current XP and global settings in parallel
+            const [currentXpData, settings] = await Promise.all([
+                db.prepare('SELECT xp FROM user_xp WHERE user_id = ?').get(user.id),
+                db.prepare('SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = ?').get('global')
+            ]);
+
+            if (!settings) {
+                throw new Error('Global settings not found');
+            }
+
+            const currentXp = currentXpData?.xp ?? 0;
+            const { base_xp: baseXp, multiplier } = settings;
+
+            // Calculate final XP
+            let finalXp = xp;
+            if (level !== null) {
+                if (level < MIN_LEVEL || level > MAX_LEVEL) {
+                    return interaction.editReply(
+                        `❌ Level must be between ${MIN_LEVEL} and ${MAX_LEVEL}.`
+                    );
+                }
+                finalXp = calculateTotalXpForLevel(level, baseXp, multiplier);
+            } else if (xp !== null && (xp < MIN_XP || xp > MAX_XP)) {
+                return interaction.editReply(
+                    `❌ XP must be between ${MIN_XP} and ${MAX_XP.toLocaleString()}.`
+                );
+            }
+
+            if (finalXp === null || finalXp < 0) {
+                throw new Error('Invalid XP calculation');
+            }
+
+            // Update XP
+            await db.prepare(`
+            INSERT INTO user_xp (user_id, xp)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                xp = excluded.xp
+        `).run(user.id, finalXp);
+
+            // Calculate levels
+            const oldLevel = calculateLevel(currentXp, baseXp, multiplier);
+            const newLevel = calculateLevel(finalXp, baseXp, multiplier);
+
+            const xpChange = Math.abs(finalXp - currentXp);
+            const xpDirection = finalXp > currentXp ? 'increased' : 'decreased';
+
+            // Create response embed
+            const responseEmbed = new EmbedBuilder()
+                .setTitle('XP Updated ✅')
+                .setDescription([
+                    `Successfully updated XP for **${user.username}**`,
+                    '',
+                    `**Previous XP:** ${currentXp.toLocaleString()} (Level ${oldLevel})`,
+                    `**New XP:** ${finalXp.toLocaleString()} (Level ${newLevel})`,
+                    '',
+                    `*XP ${xpDirection} by ${xpChange.toLocaleString()}*`
+                ].join('\n'))
+                .setColor('#00FF00')
+                .setTimestamp();
+
+            await interaction.editReply({ embeds: [responseEmbed] });
+
+            // Log the action
+            console.log({
+                action: 'XP_SET',
+                target: {
+                    username: user.tag,
+                    id: user.id
+                },
+                changes: {
+                    oldXp: currentXp,
+                    newXp: finalXp,
+                    oldLevel,
+                    newLevel
+                },
+                moderator: interaction.user.tag
+            });
+
+        } catch (error) {
+            console.error('Error in tgc-setxp command:', error);
+            await interaction.editReply(
+                '❌ An error occurred while setting XP. Please try again later.'
+            );
+        }
+    }
+
+    if (commandName === 'tgc-setlevelrole') {
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+            // Constants
+            const MIN_LEVEL = 1;
+            const MAX_LEVEL = 999;
+
+            const level = interaction.options.getInteger('level');
+            const role = interaction.options.getRole('role');
+            const guildId = interaction.guild?.id;
+
+            // Validation checks
+            if (!guildId) {
+                return interaction.editReply('❌ This command can only be used in a server.');
+            }
+
+            if (!checkCommandPermission(interaction)) {
+                return interaction.editReply('❌ You do not have permission to use this command.');
+            }
+
+            if (!level || level < MIN_LEVEL || level > MAX_LEVEL) {
+                return interaction.editReply(
+                    `❌ Level must be between ${MIN_LEVEL} and ${MAX_LEVEL}.`
+                );
+            }
+
+            if (!role) {
+                return interaction.editReply('❌ Please specify a valid role.');
+            }
+
+            // Role permission checks
+            if (!role.editable) {
+                return interaction.editReply(
+                    '❌ I do not have permission to manage this role. Please choose a role below my highest role.'
+                );
+            }
+
+            // Database operations
+            await ensureGuildSettings(guildId);
+
+            const [currentRole, totalRoles] = await Promise.all([
+                // Get current role for this level
+                db.prepare(`
+                SELECT role_id, level 
+                FROM level_roles 
+                WHERE level = ? AND guild_id = ?
+            `).get(level, guildId),
+
+                // Get total number of level roles
+                db.prepare(`
+                SELECT COUNT(*) as count 
+                FROM level_roles 
+                WHERE guild_id = ?
+            `).get(guildId)
+            ]);
+
+            // Update the level role
+            await db.prepare(`
+            INSERT INTO level_roles (
+                level, 
+                guild_id, 
+                role_id
+            ) VALUES (?, ?, ?)
+            ON CONFLICT(level, guild_id) 
+            DO UPDATE SET 
+                role_id = excluded.role_id
+        `).run(level, guildId, role.id);
+
+            // Create response embed
+            const responseEmbed = new EmbedBuilder()
+                .setTitle('Level Role Updated ✅')
+                .setDescription([
+                    `Successfully configured level role assignment.`,
+                    '',
+                    `**Level:** ${level}`,
+                    `**Role:** ${role.toString()}`,
+                    currentRole ? `**Previous Role:** <@&${currentRole.role_id}>` : '',
+                    '',
+                    `*Members will receive this role when reaching level ${level}.*`
+                ].filter(Boolean).join('\n'))
+                .setColor('#00FF00')
+                .setTimestamp()
+                .addFields({
+                    name: 'Total Level Roles',
+                    value: `${totalRoles.count} role${totalRoles.count !== 1 ? 's' : ''} configured`
+                });
+
+            await interaction.editReply({
+                embeds: [responseEmbed]
+            });
+
+            // Log the action
+            console.log({
+                action: 'LEVEL_ROLE_SET',
+                guild: {
+                    id: guildId,
+                    totalRoles: totalRoles.count
+                },
+                role: {
+                    id: role.id,
+                    name: role.name
+                },
+                level,
+                previousRole: currentRole?.role_id,
+                moderator: interaction.user.tag
+            });
+
+        } catch (error) {
+            console.error('Error in tgc-setlevelrole command:', error);
+
+            const errorMessage = error.code === 'SQLITE_CONSTRAINT'
+                ? '❌ Database constraint violation. Please check your input.'
+                : '❌ An error occurred while setting the level role. Please try again later.';
+
+            await interaction.editReply(errorMessage);
+        }
+    }
+
+    if (commandName === 'tgc-profile') {
+        const targetUser = interaction.options.getUser('user') || interaction.user;
+        const userId = targetUser?.id;
+
+        if (!userId) {
+            return interaction.reply({ content: '❌ Could not find the specified user.', flags: 64 });
+        }
+
+        try {
+            // Fetch user data and calculate XP
+            const userXpData = db.prepare(`SELECT xp FROM user_xp WHERE user_id = ?`).get(userId) || { xp: 0 };
+            const settings = db.prepare(`SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'`).get() || { base_xp: 300, multiplier: 1.2 };
+            const { base_xp: baseXp, multiplier } = settings;
+
+            // Calculate levels and progress
+            const totalXp = userXpData.xp;
+            const level = calculateLevel(totalXp, baseXp, multiplier);
+            const xpForCurrentLevel = calculateTotalXpForLevel(level - 1, baseXp, multiplier);
+            const xpForNextLevel = calculateTotalXpForLevel(level, baseXp, multiplier);
+            const xpProgress = totalXp - xpForCurrentLevel;
+            const xpRequired = xpForNextLevel - xpForCurrentLevel;
+
+            // Progress bar and calculations
+            const progressRatio = Math.max(0, Math.min(1, xpProgress / xpRequired));
+            const progressBar = createProgressBar(progressRatio);
+            const percentage = (progressRatio * 100).toFixed(2);
+            const messagesToNextLevel = Math.ceil((xpRequired - xpProgress) / 15); // Average XP per message: 15
+
+            // Get user avatar
+            const avatarURL = targetUser.displayAvatarURL({ dynamic: true, size: 512 }) || 'https://cdn.discordapp.com/embed/avatars/0.png';
+
+            const profileEmbed = new EmbedBuilder()
+                .setAuthor({ name: `${targetUser.username}'s Profile`, iconURL: avatarURL })
+                .setColor('#FFA500')
+                .setThumbnail(avatarURL)
+                .setDescription([
+                    `━━━━━━━━━━ **LEVEL ${level}** ━━━━━━━━━━`,
+                    '',
+                    `⭐ **Experience**`,
+                    `Total XP: \`${totalXp.toLocaleString()}\``,
+                    '',
+                    `📊 **Level Progress**`,
+                    progressBar,
+                    `\`${xpProgress.toLocaleString()} / ${xpRequired.toLocaleString()}\` XP`,
+                    `Progress: ${percentage}%`,
+                    '',
+                    `📈 **Statistics**`,
+                    `Messages until next level: \`~${messagesToNextLevel}\``,
+                    '',
+                    `━━━━━━━━━━━━━━━━━━━━━━━━━`
+                ].join('\n'))
+                .setFooter({ text: `Keep chatting to level up! • ${Math.round(progressRatio * 100)}% to Level ${level + 1}` })
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [profileEmbed], flags: 64 });
+
+        } catch (error) {
+            console.error('Error generating profile:', error);
+            await interaction.reply({
+                content: '❌ An error occurred while generating the profile. Please try again later.',
+                flags: 64
+            });
+        }
+    }
+});
+
+// ===============================
+//          Embed System
+// ===============================
 async function uploadToImgur(imageUrl) {
     await imgurRateLimiter.waitForNextSlot();
-    
+
     try {
         console.log(`Attempting to upload image to Imgur: ${imageUrl}`);
-        
+
         // Download the image first
         const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
         const buffer = Buffer.from(imageResponse.data, 'binary');
-        
+
         // Create form data for Imgur API
         const formData = new FormData();
         formData.append('image', buffer);
-        
+
         // Upload to Imgur
         const response = await axios.post('https://api.imgur.com/3/image', formData, {
             headers: {
@@ -1318,7 +1639,7 @@ async function uploadToImgur(imageUrl) {
                 'Authorization': `Client-ID ${IMGUR_CLIENT_ID}`
             }
         });
-        
+
         if (response.data.success) {
             console.log(`Successfully uploaded to Imgur: ${response.data.data.link}`);
             return response.data.data.link;
@@ -1331,7 +1652,6 @@ async function uploadToImgur(imageUrl) {
         throw new Error(`Imgur upload failed: ${error.message}`);
     }
 }
-
 // Define color constants
 const EMBED_COLORS = {
     "Pink": "#eb0062",
@@ -1346,7 +1666,6 @@ const EMBED_COLORS = {
     "Purple": "#76009a",
     "Default": "#00AE86"
 };
-
 // Enum for embed creation steps
 const CreationStep = {
     TITLE: 0,
@@ -1360,7 +1679,6 @@ const CreationStep = {
     CHANNEL: 8,
     COMPLETE: 9
 };
-
 // Embed Session Manager
 class EmbedSession {
     constructor(userId) {
@@ -1392,16 +1710,16 @@ class EmbedSession {
 
     isValidImageUrl(url) {
         if (!url || url === 'skip') return false;
-        
+
         // Check if it's a valid URL
         try {
             new URL(url);
         } catch (e) {
             return false;
         }
-        
+
         // Check if it's likely an image URL
-        return url.match(/\.(jpeg|jpg|gif|png|webp)$/i) !== null || 
+        return url.match(/\.(jpeg|jpg|gif|png|webp)$/i) !== null ||
             url.startsWith('https://cdn.discordapp.com/') ||
             url.startsWith('https://media.discordapp.net/') ||
             url.startsWith('https://i.imgur.com/') ||
@@ -1418,7 +1736,7 @@ class EmbedSession {
             case CreationStep.COLOR:
                 return `Please choose a color for the embed (${Object.keys(EMBED_COLORS).join(', ')}):`;
             case CreationStep.THUMBNAIL:
-                return "Please provide a thumbnail URL, upload an image (will be uploaded to Imgur), or type 'skip':";        
+                return "Please provide a thumbnail URL, upload an image (will be uploaded to Imgur), or type 'skip':";
             case CreationStep.IMAGE:
                 return "Please provide an image URL, upload an image (will be uploaded to Imgur), or type 'skip':";
             case CreationStep.FOOTER:
@@ -1434,7 +1752,7 @@ class EmbedSession {
 
     toDiscordEmbed() {
         const embed = new EmbedBuilder();
-        
+
         // Set Title and Title URL
         if (this.fields.title) {
             embed.setTitle(this.fields.title);
@@ -1442,15 +1760,15 @@ class EmbedSession {
                 embed.setURL(this.fields.titleUrl);
             }
         }
-        
+
         // Set Description
         embed.setDescription(this.fields.description || "Creating embed...");
-        
+
         // Set Color
         if (this.fields.color) {
             embed.setColor(this.fields.color);
         }
-        
+
         // Set Image - prioritize attachment over URL
         if (this.imageAttachment) {
             console.log(`Setting image to attachment: ${this.imageAttachment}`);
@@ -1459,7 +1777,7 @@ class EmbedSession {
             console.log(`Setting image to URL: ${this.fields.image}`);
             embed.setImage(this.fields.image);
         }
-        
+
         // Set Thumbnail - prioritize attachment over URL
         if (this.thumbnailAttachment) {
             console.log(`Setting thumbnail to attachment: ${this.thumbnailAttachment}`);
@@ -1468,7 +1786,7 @@ class EmbedSession {
             console.log(`Setting thumbnail to URL: ${this.fields.thumbnail}`);
             embed.setThumbnail(this.fields.thumbnail);
         }
-        
+
         // Set Footer - THIS IS THE FIX
         if (this.fields.footer && this.fields.footer !== 'skip') {
             console.log(`Applying footer text: "${this.fields.footer}"`);
@@ -1476,7 +1794,7 @@ class EmbedSession {
         } else {
             console.log('No footer to apply', this.fields.footer);
         }
-    
+
         return embed;
     }
 
@@ -1525,7 +1843,6 @@ class EmbedSession {
         }
     }
 }
-
 class EmbedSessionManager {
     constructor() {
         this.sessions = new Map();
@@ -1545,15 +1862,13 @@ class EmbedSessionManager {
         this.sessions.delete(userId);
     }
 }
-
 // Initialize the session manager
 const embedSessionManager = new EmbedSessionManager();
-
 // Command handler
 client.on('interactionCreate', async interaction => {
     if (!interaction.isCommand()) return;
     if (interaction.commandName !== 'tgc-createembed') return;
-    
+
     try {
         // Check if user already has an active session
         if (embedSessionManager.getSession(interaction.user.id)) {
@@ -1572,10 +1887,10 @@ client.on('interactionCreate', async interaction => {
         }
 
         console.log(`Starting embed creation for user: ${interaction.user.tag} (${interaction.user.id})`);
-        
+
         // Create a new session for this user
         const session = embedSessionManager.createSession(interaction.user.id);
-        
+
         // Send initial prompt as ephemeral
         const embed = new EmbedBuilder()
             .setTitle('Embed Creation Started')
@@ -1593,21 +1908,21 @@ client.on('interactionCreate', async interaction => {
             .setColor('#00AE86')
             .setFooter({ text: 'Follow the prompts to create your embed' });
 
-        await interaction.reply({ 
+        await interaction.reply({
             embeds: [embed],
         });
-        
+
         // Send first prompt
         const promptMessage = await interaction.channel.send({
             content: session.getPromptForStep(),
         });
-        
+
         // Create preview message with initial embed
         const previewEmbed = session.toDiscordEmbed();
         console.log('Creating initial preview embed');
-        
+
         try {
-            session.previewMessage = await interaction.channel.send({ 
+            session.previewMessage = await interaction.channel.send({
                 content: '**Preview:**',
                 embeds: [previewEmbed],
             });
@@ -1616,21 +1931,21 @@ client.on('interactionCreate', async interaction => {
             console.error('Error creating preview message:', error);
             await interaction.channel.send('⚠️ There was an issue creating the preview. The embed creation will continue, but you may not see live updates.');
         }
-        
+
         // Add timeout to automatically clean up abandoned sessions
         session.timeoutId = setTimeout(() => {
             if (embedSessionManager.getSession(interaction.user.id)) {
                 interaction.channel.send({
                     content: `⚠️ <@${interaction.user.id}> Your embed creation session has timed out due to inactivity.`,
                 }).catch(console.error);
-                
+
                 embedSessionManager.deleteSession(interaction.user.id);
             }
         }, 15 * 60 * 1000); // 15 minutes timeout
-        
+
     } catch (error) {
         console.error('Error in embed creation command:', error);
-        
+
         // Handle the error gracefully
         if (interaction.replied || interaction.deferred) {
             await interaction.followUp({
@@ -1643,14 +1958,13 @@ client.on('interactionCreate', async interaction => {
                 flags: 64
             });
         }
-        
+
         // Clean up any created session if there was an error
         if (interaction.user?.id) {
             embedSessionManager.deleteSession(interaction.user.id);
         }
     }
 });
-
 // Message handler for embed creation steps
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
@@ -1662,14 +1976,14 @@ client.on('messageCreate', async message => {
         // Reset session timeout if it exists
         if (session.timeoutId) {
             clearTimeout(session.timeoutId);
-            
+
             // Set a new timeout
             session.timeoutId = setTimeout(() => {
                 if (embedSessionManager.getSession(message.author.id)) {
                     message.channel.send({
                         content: `⚠️ <@${message.author.id}> Your embed creation session has timed out due to inactivity.`,
                     }).catch(console.error);
-                    
+
                     embedSessionManager.deleteSession(message.author.id);
                 }
             }, 15 * 60 * 1000); // 15 minutes timeout
@@ -1683,18 +1997,18 @@ client.on('messageCreate', async message => {
         }
 
         // Process input based on current step
-        switch(session.currentStep) {
+        switch (session.currentStep) {
             case CreationStep.TITLE: {
                 if (!message.content.trim()) {
                     await message.channel.send("❌ Title cannot be empty. Please enter a title for your embed:");
                     return;
                 }
-                
+
                 if (message.content.length > 256) {
                     await message.channel.send("❌ Title is too long (max 256 characters). Please enter a shorter title:");
                     return;
                 }
-                
+
                 session.setField('title', message.content);
                 break;
             }
@@ -1703,7 +2017,7 @@ client.on('messageCreate', async message => {
                     await message.channel.send("❌ Invalid URL format. Please enter a valid URL starting with http:// or https:// (or type 'skip'):");
                     return;
                 }
-                
+
                 session.setField('titleUrl', message.content);
                 break;
             }
@@ -1712,52 +2026,52 @@ client.on('messageCreate', async message => {
                     await message.channel.send("❌ Description cannot be empty. Please enter a description for your embed:");
                     return;
                 }
-                
+
                 if (message.content.length > 4096) {
                     await message.channel.send("❌ Description is too long (max 4096 characters). Please enter a shorter description:");
                     return;
                 }
-                
+
                 session.setField('description', message.content);
                 break;
             }
             case CreationStep.COLOR: {
-            if (message.content.toLowerCase() === 'skip') {
-                // Default color if skipped
-                session.setField('color', EMBED_COLORS["Default"]);
-            } else {
-                // Check if the color exists in the EMBED_COLORS object (case-insensitive)
-                const colorInput = message.content;
-                const colorKey = Object.keys(EMBED_COLORS).find(key => 
-                    key.toLowerCase() === colorInput.toLowerCase()
-                );
-                
-                if (colorKey) {
-                    session.setField('color', EMBED_COLORS[colorKey]);
+                if (message.content.toLowerCase() === 'skip') {
+                    // Default color if skipped
+                    session.setField('color', EMBED_COLORS["Default"]);
                 } else {
-                    // If color doesn't exist, send available colors and return
-                    const availableColors = Object.keys(EMBED_COLORS).join(', ');
-                    await message.channel.send(`❌ Invalid color. Please choose from: ${availableColors} (or type 'skip' for default):`);
-                    return;
+                    // Check if the color exists in the EMBED_COLORS object (case-insensitive)
+                    const colorInput = message.content;
+                    const colorKey = Object.keys(EMBED_COLORS).find(key =>
+                        key.toLowerCase() === colorInput.toLowerCase()
+                    );
+
+                    if (colorKey) {
+                        session.setField('color', EMBED_COLORS[colorKey]);
+                    } else {
+                        // If color doesn't exist, send available colors and return
+                        const availableColors = Object.keys(EMBED_COLORS).join(', ');
+                        await message.channel.send(`❌ Invalid color. Please choose from: ${availableColors} (or type 'skip' for default):`);
+                        return;
+                    }
                 }
+                break;
             }
-            break;
-        }
             case CreationStep.THUMBNAIL: {
                 // Check for image attachment first
                 if (message.attachments.size > 0) {
                     const attachment = message.attachments.first();
-                    if (attachment.contentType?.startsWith('image/') || 
+                    if (attachment.contentType?.startsWith('image/') ||
                         attachment.name?.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
-                        
+
                         await message.channel.send("🔄 Uploading thumbnail to Imgur...");
-                        
+
                         try {
                             // Upload to Imgur
                             const imgurUrl = await session.uploadAttachmentToImgur(attachment);
                             console.log(`Setting thumbnail to Imgur URL: ${imgurUrl}`);
                             session.thumbnailAttachment = imgurUrl;
-                            
+
                             await message.channel.send("✅ Thumbnail uploaded successfully!");
                         } catch (error) {
                             console.error('Thumbnail upload error:', error);
@@ -1782,17 +2096,17 @@ client.on('messageCreate', async message => {
                 // Check for image attachment first
                 if (message.attachments.size > 0) {
                     const attachment = message.attachments.first();
-                    if (attachment.contentType?.startsWith('image/') || 
+                    if (attachment.contentType?.startsWith('image/') ||
                         attachment.name?.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
-                        
+
                         await message.channel.send("🔄 Uploading image to Imgur...");
-                        
+
                         try {
                             // Upload to Imgur
                             const imgurUrl = await session.uploadAttachmentToImgur(attachment);
                             console.log(`Setting image to Imgur URL: ${imgurUrl}`);
                             session.imageAttachment = imgurUrl;
-                            
+
                             await message.channel.send("✅ Image uploaded successfully!");
                         } catch (error) {
                             console.error('Image upload error:', error);
@@ -1808,7 +2122,7 @@ client.on('messageCreate', async message => {
                         await message.channel.send("❌ Invalid image URL. Please provide a valid image URL, upload an image, or type 'skip':");
                         return;
                     }
-                    
+
                     console.log(`Setting image URL: ${message.content}`);
                     session.setField('image', message.content);
                 } else {
@@ -1834,17 +2148,17 @@ client.on('messageCreate', async message => {
                     }
                     const label = parts[0];
                     const url = parts.slice(1).join(' ');
-                    
+
                     if (!label || !url || !url.match(/^https?:\/\/.+/)) {
                         await message.channel.send("❌ Invalid button format. URL must start with http:// or https://. Please try again or type 'skip':");
                         return;
                     }
-                    
+
                     if (label.length > 80) {
                         await message.channel.send("❌ Button label is too long (max 80 characters). Please use a shorter label:");
                         return;
                     }
-                    
+
                     session.setField('buttonLabel', label);
                     session.setField('buttonUrl', url);
                 }
@@ -1859,7 +2173,7 @@ client.on('messageCreate', async message => {
 
                 // Check permissions in the target channel
                 const permissions = channel.permissionsFor(message.client.user);
-                if (!permissions.has(PermissionsBitField.Flags.SendMessages) || 
+                if (!permissions.has(PermissionsBitField.Flags.SendMessages) ||
                     !permissions.has(PermissionsBitField.Flags.EmbedLinks)) {
                     await message.channel.send(`❌ I don't have permission to send embeds in ${channel}. Please choose another channel or fix permissions.`);
                     return;
@@ -1872,14 +2186,14 @@ client.on('messageCreate', async message => {
                     thumbnail: session.thumbnailAttachment || session.fields.thumbnail,
                     image: session.imageAttachment || session.fields.image
                 });
-                
+
                 const finalEmbed = session.toDiscordEmbed();
                 const components = session.getComponents();
-                
+
                 try {
                     const sentEmbed = await channel.send({ embeds: [finalEmbed], components });
                     console.log('Embed sent successfully');
-                    
+
                     // Send confirmation with link to the embed
                     await message.channel.send({
                         content: `✅ Embed created and sent successfully to ${channel}!\n[Jump to Embed](${sentEmbed.url})`,
@@ -1893,24 +2207,24 @@ client.on('messageCreate', async message => {
                 try {
                     // Collect all messages to delete
                     const messagesToDelete = [];
-                    
+
                     // Get the last 50 messages in the channel
                     const messages = await message.channel.messages.fetch({ limit: 50 });
-                    
+
                     // Filter messages that are part of this embed creation session
-                    const sessionMessages = messages.filter(msg => 
-                        (msg.author.id === message.client.user.id && 
-                         msg.content.includes('Please') && 
-                         msg.createdTimestamp > Date.now() - 30 * 60 * 1000) || // Only from last 30 minutes
-                        (msg.author.id === message.author.id && 
-                         msg.createdTimestamp > Date.now() - 30 * 60 * 1000)    // Only from last 30 minutes
+                    const sessionMessages = messages.filter(msg =>
+                        (msg.author.id === message.client.user.id &&
+                            msg.content.includes('Please') &&
+                            msg.createdTimestamp > Date.now() - 30 * 60 * 1000) || // Only from last 30 minutes
+                        (msg.author.id === message.author.id &&
+                            msg.createdTimestamp > Date.now() - 30 * 60 * 1000)    // Only from last 30 minutes
                     );
-                    
+
                     // Add session preview message if it exists
                     if (session.previewMessage) {
                         messagesToDelete.push(session.previewMessage);
                     }
-                    
+
                     // Delete all collected messages
                     if (sessionMessages.size > 0) {
                         await message.channel.bulkDelete(sessionMessages).catch(error => {
@@ -1926,7 +2240,7 @@ client.on('messageCreate', async message => {
                 if (session.timeoutId) {
                     clearTimeout(session.timeoutId);
                 }
-                
+
                 // Delete the session
                 embedSessionManager.deleteSession(message.author.id);
                 return;
@@ -1947,12 +2261,12 @@ client.on('messageCreate', async message => {
                 thumbnail: session.thumbnailAttachment || session.fields.thumbnail,
                 image: session.imageAttachment || session.fields.image
             });
-            
+
             const previewEmbed = session.toDiscordEmbed();
             if (session.previewMessage) {
-                await session.previewMessage.edit({ 
+                await session.previewMessage.edit({
                     content: '**Preview:**',
-                    embeds: [previewEmbed] 
+                    embeds: [previewEmbed]
                 });
             }
         } catch (error) {
@@ -1974,45 +2288,44 @@ client.on('messageCreate', async message => {
     } catch (error) {
         console.error('Embed creation error:', error);
         await message.channel.send(`❌ There was an error processing your input: ${error.message}`);
-        
+
         // Don't delete the session on error, let the user try again
     }
 });
-
 // cancel embed creation command handler
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isCommand()) return;
     if (interaction.commandName !== 'tgc-cancelembed') return;
-    
+
     // Check if user has an active session
     const session = embedSessionManager.getSession(interaction.user.id);
-    
+
     if (!session) {
         return interaction.reply({
             content: '❌ You don\'t have an active embed creation session.',
             flags: 64
         });
     }
-    
+
     try {
         // Clean up any preview messages
         if (session.previewMessage) {
             await session.previewMessage.delete().catch(console.error);
         }
-        
+
         // Clear any timeouts
         if (session.timeoutId) {
             clearTimeout(session.timeoutId);
         }
-        
+
         // Delete the session
         embedSessionManager.deleteSession(interaction.user.id);
-        
+
         await interaction.reply({
             content: '✅ Embed creation session cancelled successfully.',
             flags: 64
         });
-        
+
     } catch (error) {
         console.error('Error cancelling embed session:', error);
         await interaction.reply({
@@ -2021,33 +2334,34 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 });
-
 // Error handling
 client.on('error', console.error);
 process.on('unhandledRejection', console.error);
 
-// Purge
+// ===============================
+//       Mass Message Delete
+// ===============================
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isCommand()) return;
-  
-    if (interaction.commandName === "purge") {
+
+    if (interaction.commandName === "tgc-purge") {
         if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-            return interaction.reply({ 
-                content: "❌ You need `Manage Messages` permission!", 
-                flags: 64 
+            return interaction.reply({
+                content: "❌ You need `Manage Messages` permission!",
+                flags: 64
             });
         }
-  
+
         const user = interaction.options.getUser("user");
         const specificChannel = interaction.options.getChannel("channel");
-        
-        if (!user) return interaction.reply({ 
-            content: "❌ You must mention a user!", 
-            flags: 64 
+
+        if (!user) return interaction.reply({
+            content: "❌ You must mention a user!",
+            flags: 64
         });
 
         await interaction.deferReply({ flags: 64 });
-        
+
         let stats = {
             totalDeleted: 0,
             recentDeleted: 0,
@@ -2062,7 +2376,7 @@ client.on("interactionCreate", async (interaction) => {
 
         async function updateProgress(interaction, stats, isInitial = false) {
             if (Date.now() - lastProgressUpdate < progressUpdateInterval && !isInitial) return;
-            
+
             const content = [
                 `🔍 Scanning messages...`,
                 `📊 Current Progress:`,
@@ -2087,19 +2401,19 @@ client.on("interactionCreate", async (interaction) => {
                 let lastId = null;
                 let messageCount = 0;
                 const twoWeeksAgo = Date.now() - (14 * 24 * 60 * 60 * 1000);
-                
+
                 while (true) {
-                    const messages = await channel.messages.fetch({ 
-                        limit: 100, 
-                        before: lastId 
+                    const messages = await channel.messages.fetch({
+                        limit: 100,
+                        before: lastId
                     });
-                    
+
                     if (messages.size === 0) break;
                     lastId = messages.last().id;
                     messageCount += messages.size;
 
                     const userMessages = messages.filter(m => m.author.id === user.id);
-                    
+
                     if (userMessages.size > 0) {
                         const recentMessages = userMessages.filter(m => m.createdTimestamp > twoWeeksAgo);
                         const olderMessages = userMessages.filter(m => m.createdTimestamp <= twoWeeksAgo);
@@ -2210,7 +2524,6 @@ client.on("interactionCreate", async (interaction) => {
         }
     }
 });
-
 // Function to save log to file
 async function saveLogToFile(userId, userTag, logData, interaction) {
     try {
@@ -2247,7 +2560,7 @@ async function saveLogToFile(userId, userTag, logData, interaction) {
         ].join('\n');
 
         // Format log content with message count
-        const formattedLogData = logData.map((entry, index) => 
+        const formattedLogData = logData.map((entry, index) =>
             `[${index + 1}] ${entry}`
         ).join('');
 
@@ -2264,7 +2577,7 @@ async function saveLogToFile(userId, userTag, logData, interaction) {
         if (logChannelData?.log_channel) {
             try {
                 const logChannel = await interaction.guild.channels.fetch(logChannelData.log_channel);
-                
+
                 if (logChannel?.isTextBased()) {
                     // Create detailed embed
                     const logEmbed = new EmbedBuilder()
@@ -2278,25 +2591,25 @@ async function saveLogToFile(userId, userTag, logData, interaction) {
                             `• File Name: \`${fileName}\``
                         ].join('\n'))
                         .addFields(
-                            { 
-                                name: '👮 Moderator', 
-                                value: `${interaction.user.tag}\n(${interaction.user.id})`, 
-                                inline: true 
+                            {
+                                name: '👮 Moderator',
+                                value: `${interaction.user.tag}\n(${interaction.user.id})`,
+                                inline: true
                             },
-                            { 
-                                name: '🎯 Target User', 
-                                value: `${userTag}\n(${userId})`, 
-                                inline: true 
+                            {
+                                name: '🎯 Target User',
+                                value: `${userTag}\n(${userId})`,
+                                inline: true
                             },
-                            { 
-                                name: '⏰ Timestamp', 
-                                value: `<t:${Math.floor(Date.now() / 1000)}:F>`, 
-                                inline: true 
+                            {
+                                name: '⏰ Timestamp',
+                                value: `<t:${Math.floor(Date.now() / 1000)}:F>`,
+                                inline: true
                             }
                         )
                         .setTimestamp()
-                        .setFooter({ 
-                            text: `Server: ${interaction.guild.name} | ID: ${interaction.guild.id}` 
+                        .setFooter({
+                            text: `Server: ${interaction.guild.name} | ID: ${interaction.guild.id}`
                         });
 
                     // Send embed with file
@@ -2360,7 +2673,6 @@ async function saveLogToFile(userId, userTag, logData, interaction) {
         });
     }
 }
-
 // Function to delete old messages with rate limit
 async function deleteOldMessagesWithRateLimit(interaction, messageData, userTag) {
     let delay = 1500;
@@ -2418,21 +2730,21 @@ async function deleteOldMessagesWithRateLimit(interaction, messageData, userTag)
 
         } catch (error) {
             errorCount++;
-            
+
             if (error.code === 50013) {
                 console.error(`❌ Missing permissions in channel ${messageInfo.channelId}`);
                 // Skip remaining messages in this channel
                 messageData = messageData.filter(m => m.channelId !== messageInfo.channelId);
-                
+
             } else if (error.code === 429) {
                 console.warn(`🚦 Rate limited! Increasing delay from ${delay}ms to ${delay * 2}ms`);
                 delay = Math.min(delay * 2, 5000); // Cap at 5 seconds
                 await new Promise(r => setTimeout(r, delay * 2));
-                
+
             } else if (error.code === 10008) {
                 // Message already deleted
                 skippedCount++;
-                
+
             } else {
                 console.error(`❌ Error deleting message ${messageInfo.id}:`, error);
                 // Slightly increase delay on unknown errors
@@ -2480,6 +2792,9 @@ async function deleteOldMessagesWithRateLimit(interaction, messageData, userTag)
     };
 }
 
+// ============================================
+//  Kick, Ban, Unban, Timeout, Strike, Lock Commands
+// ============================================
 // Kick Command
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-kick') return;
@@ -2551,12 +2866,41 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 });
-
 // Ban Command
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isCommand() || interaction.commandName !== "tgc-ban") return;
 
-    // Check Permissions
+    // Create logs directory if it doesn't exist
+    const logsDir = path.join(__dirname, 'ban_logs');
+    try {
+        await fs.mkdir(logsDir, { recursive: true });
+    } catch (error) {
+        console.error('Error creating logs directory:', error);
+    }
+
+    // Function to log errors
+    async function logError(errorDetails) {
+        const timestamp = new Date().toISOString();
+        const logFileName = `ban_errors_${timestamp.split('T')[0]}.txt`;
+        const logFilePath = path.join(logsDir, logFileName);
+
+        const logEntry = [
+            `=== Ban Error Log (${timestamp}) ===`,
+            `Time: ${new Date().toLocaleString()}`,
+            `Moderator: ${interaction.user.tag} (${interaction.user.id})`,
+            `Error Details:`,
+            JSON.stringify(errorDetails, null, 2),
+            '=====================================\n'
+        ].join('\n');
+
+        try {
+            await fs.appendFile(logFilePath, logEntry);
+        } catch (error) {
+            console.error('Error writing to log file:', error);
+        }
+    }
+
+    // Rest of your existing code...
     if (!checkCommandPermission(interaction)) {
         return interaction.reply({
             content: 'You do not have permission to use this command.',
@@ -2581,10 +2925,11 @@ client.on("interactionCreate", async (interaction) => {
 
     try {
         // Calculate total ban duration in milliseconds
-        const totalDuration = (days * 24 * 60 * 60 * 1000) + 
-                              (hours * 60 * 60 * 1000) + 
-                              (minutes * 60 * 1000);
+        const totalDuration = (days * 24 * 60 * 60 * 1000) +
+            (hours * 60 * 60 * 1000) +
+            (minutes * 60 * 1000);
         const expiresAt = totalDuration > 0 ? Date.now() + totalDuration : null;
+
 
         // Convert duration to human-readable text
         let durationText = "";
@@ -2646,6 +2991,7 @@ client.on("interactionCreate", async (interaction) => {
         let failCount = 0;
         let successfulBans = [];
         let failedBans = [];
+        let errors = [];
 
         for (const guild of client.guilds.cache.values()) {
             try {
@@ -2653,12 +2999,18 @@ client.on("interactionCreate", async (interaction) => {
                 if (!botMember || !botMember.permissions.has("BanMembers")) {
                     failedBans.push(guild.name);
                     failCount++;
+                    errors.push({
+                        guild: guild.name,
+                        guildId: guild.id,
+                        error: 'Missing ban permissions',
+                        timestamp: new Date().toISOString()
+                    });
                     continue;
                 }
 
                 await guild.members.ban(target.id, {
                     reason: reason,
-                    deleteMessageSeconds: deleteMessageDays * 86400 // Convert days to seconds
+                    deleteMessageSeconds: deleteMessageDays * 86400
                 });
 
                 successCount++;
@@ -2667,7 +3019,33 @@ client.on("interactionCreate", async (interaction) => {
                 console.error(`❌ Failed to ban in ${guild.name}:`, err);
                 failCount++;
                 failedBans.push(guild.name);
+                errors.push({
+                    guild: guild.name,
+                    guildId: guild.id,
+                    error: err.message,
+                    errorCode: err.code,
+                    stack: err.stack,
+                    timestamp: new Date().toISOString()
+                });
             }
+        }
+
+        // Log errors if any occurred
+        if (errors.length > 0) {
+            await logError({
+                target: {
+                    username: target.tag,
+                    id: target.id
+                },
+                reason,
+                duration: durationText,
+                deleteMessageDays,
+                errors,
+                successCount,
+                failCount,
+                successfulBans,
+                failedBans
+            });
         }
 
         // Create and send the ban confirmation embed
@@ -2690,13 +3068,25 @@ client.on("interactionCreate", async (interaction) => {
             ].join("\n"))
             .setTimestamp();
 
-        // Use editReply instead of reply since we deferred earlier
         await interaction.editReply({ embeds: [embed] });
 
     } catch (error) {
         console.error("❌ Error executing global ban:", error);
-        
-        // If we haven't replied yet, reply now
+
+        // Log the error
+        await logError({
+            target: {
+                username: target?.tag,
+                id: target?.id
+            },
+            reason,
+            error: {
+                message: error.message,
+                stack: error.stack,
+                code: error.code
+            }
+        });
+
         if (interaction.deferred) {
             await interaction.editReply({ content: "An error occurred while executing the ban." });
         } else {
@@ -2704,93 +3094,13 @@ client.on("interactionCreate", async (interaction) => {
         }
     }
 });
-
-// Ban List Command
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-banlist') return;
-
-    // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
-    }
-
-    // Defer the reply immediately
-    await interaction.deferReply({ flags: 64 });
-
-    try {
-        // Synchronize bans before displaying them
-        await synchronizeBans();
-
-        // Fetch bans from the database
-        const bans = db.prepare('SELECT * FROM global_bans').all();
-
-        if (!bans.length) {
-            return interaction.editReply({
-                content: 'No users are currently banned.'
-            });
-        }
-
-        // Fetch user details and build the list
-        const banList = await Promise.all(
-            bans.map(async (ban) => {
-                try {
-                    const user = await client.users.fetch(ban.user_id);
-                    const expiresText = ban.expires_at
-                        ? `Expires: <t:${Math.floor(ban.expires_at / 1000)}:R>` // Discord Relative Timestamp
-                        : 'Permanent Ban';
-
-                    return `**${user.tag}** (ID: ${ban.user_id})\n**Reason:** ${ban.reason}\n${expiresText}`;
-                } catch {
-                    return `**Unknown User** (ID: ${ban.user_id})\n**Reason:** ${ban.reason}\n${
-                        ban.expires_at ? `Expires: <t:${Math.floor(ban.expires_at / 1000)}:R>` : 'Permanent Ban'
-                    }`;
-                }
-            })
-        );
-
-        // Split message if over 2000 characters
-        const MAX_MESSAGE_LENGTH = 2000;
-        const banChunks = [];
-        let currentChunk = '';
-
-        for (const entry of banList) {
-            if (currentChunk.length + entry.length + 2 > MAX_MESSAGE_LENGTH) {
-                banChunks.push(currentChunk);
-                currentChunk = '';
-            }
-            currentChunk += entry + '\n\n';
-        }
-        if (currentChunk) banChunks.push(currentChunk);
-
-        // Send the first chunk as the main reply
-        await interaction.editReply({ content: banChunks[0] });
-
-        // Send remaining chunks as follow-up messages
-        for (let i = 1; i < banChunks.length; i++) {
-            await interaction.followUp({ 
-                content: banChunks[i],
-                flags: 64
-            });
-        }
-
-    } catch (error) {
-        console.error('Error fetching ban list:', error);
-        await interaction.editReply({
-            content: 'An error occurred while fetching the ban list.'
-        });
-    }
-});
-
 // unban autocomplete handler
 client.on('interactionCreate', async interaction => {
     if (!interaction.isAutocomplete()) return;
 
     if (interaction.commandName === 'tgc-unban') {
         const focusedValue = interaction.options.getFocused().toLowerCase();
-        
+
         try {
             // Get all banned users from database and guilds
             const bannedUsers = new Map();
@@ -2846,8 +3156,8 @@ client.on('interactionCreate', async interaction => {
             );
 
             // Filter based on search input
-            const matches = bannedUserDetails.filter(user => 
-                user.name.toLowerCase().includes(focusedValue) || 
+            const matches = bannedUserDetails.filter(user =>
+                user.name.toLowerCase().includes(focusedValue) ||
                 user.id.includes(focusedValue)
             );
 
@@ -2865,7 +3175,6 @@ client.on('interactionCreate', async interaction => {
         }
     }
 });
-
 // Unban Command Handler
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-unban') return;
@@ -2878,11 +3187,11 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 
-    await interaction.deferReply({ });
+    await interaction.deferReply({});
 
     try {
         const searchInput = interaction.options.getString('search');
-        
+
         // Get all banned users from database and guilds
         const bannedUsers = new Map();
 
@@ -2919,7 +3228,7 @@ client.on('interactionCreate', async (interaction) => {
         // Try to find the user by ID or username
         let targetUserId = null;
         let userDetails = null;
-        
+
         // First, check if the search input is a valid user ID
         if (/^\d+$/.test(searchInput)) {
             targetUserId = searchInput;
@@ -3030,7 +3339,6 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 });
-
 // Process Unban Function
 async function processUnban(interaction, targetUserId, userDetails) {
     try {
@@ -3087,7 +3395,6 @@ async function processUnban(interaction, targetUserId, userDetails) {
         });
     }
 }
-
 // Synchronize bans between Discord and the database
 async function synchronizeBans() {
     try {
@@ -3144,7 +3451,6 @@ async function synchronizeBans() {
         console.error("Error during ban synchronization:", error);
     }
 }
-
 // Function to parse duration string (e.g., "1d 2h 30m")
 function parseDuration(durationStr) {
     if (durationStr === "0") return 0; // Unmute command
@@ -3164,65 +3470,120 @@ function parseDuration(durationStr) {
 
     return totalMs > 0 ? totalMs : null;
 }
-
 // timeout slash command
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === "tgc-timeout") {
+        // Defer the reply since this operation might take time across multiple servers
+        await interaction.deferReply({ flags: 64 });
+
         const user = interaction.options.getUser("user");
         const durationStr = interaction.options.getString("duration");
         const reason = interaction.options.getString("reason") || "No reason provided.";
 
         // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
-    }
-        
+        if (!checkCommandPermission(interaction)) {
+            return interaction.editReply({
+                content: '❌ You do not have permission to use this command.',
+                flags: 64
+            });
+        }
+
+        if (!user) {
+            return interaction.editReply({
+                content: '❌ Invalid user specified.',
+                flags: 64
+            });
+        }
+
         // Convert duration
         const durationMs = parseDuration(durationStr);
         const expiresAt = durationMs ? Date.now() + durationMs : null;
 
-        // Store timeout in DB
-        if (durationMs) {
-            db.prepare(`
-                INSERT INTO global_timeouts (user_id, expires_at, reason)
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET expires_at = ?, reason = ?
-            `).run(user.id, expiresAt, reason, expiresAt, reason);
-        } else {
-            db.prepare("DELETE FROM global_timeouts WHERE user_id = ?").run(user.id);
-        }
-
-        // Apply timeout in all servers
-        let successGuilds = 0;
-        let failedGuilds = 0;
-        
-        for (const guild of client.guilds.cache.values()) {
-            try {
-                const member = await guild.members.fetch(user.id);
-                if (member) {
-                    await member.timeout(durationMs || null, reason);
-                    successGuilds++;
-                }
-            } catch (error) {
-                failedGuilds++;
-                console.error(`❌ Failed to timeout user in ${guild.name}:`, error);
+        try {
+            // Store timeout in DB
+            if (durationMs) {
+                db.prepare(`
+                    INSERT INTO global_timeouts (user_id, expires_at, reason)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET expires_at = ?, reason = ?
+                `).run(user.id, expiresAt, reason, expiresAt, reason);
+            } else {
+                db.prepare("DELETE FROM global_timeouts WHERE user_id = ?").run(user.id);
             }
+
+            // Apply timeout in all servers
+            let successGuilds = 0;
+            let failedGuilds = 0;
+            let notFoundGuilds = 0;
+
+            // Create a progress message
+            const progressMessage = `Processing timeout for **${user.tag}**...`;
+            await interaction.editReply({ content: progressMessage });
+
+            for (const guild of client.guilds.cache.values()) {
+                try {
+                    // Try to fetch the member - they might not be in all guilds
+                    const member = await guild.members.fetch(user.id).catch(() => null);
+
+                    if (member) {
+                        // Check if bot has permission to timeout this user
+                        const botMember = await guild.members.fetch(client.user.id);
+                        const canTimeout = member.moderatable &&
+                            botMember.permissions.has("ModerateMembers");
+
+                        if (canTimeout) {
+                            await member.timeout(durationMs || null, reason);
+                            successGuilds++;
+                        } else {
+                            failedGuilds++;
+                        }
+                    } else {
+                        notFoundGuilds++;
+                    }
+                } catch (error) {
+                    failedGuilds++;
+                    console.error(`❌ Failed to timeout user in ${guild.name}:`, error);
+                }
+            }
+
+            const actionType = durationMs ? `timed out for **${durationStr}**` : "unmuted";
+
+            await interaction.editReply({
+                content: `✅ **${user.tag}** has been ${actionType} across all servers.\n\n` +
+                    `🟢 Success: **${successGuilds}** servers\n` +
+                    `🔴 Failed: **${failedGuilds}** servers\n` +
+                    `⚪ Not Found: **${notFoundGuilds}** servers`,
+                flags: 64
+            });
+
+            // Log the action
+            console.log(`🔇 User ${user.tag} has been ${actionType} globally. ` +
+                `Success: ${successGuilds}, Failed: ${failedGuilds}, Not Found: ${notFoundGuilds}`);
+
+            // Optional: Send notification to a log channel
+            const logChannel = client.channels.cache.get(process.env.LOG_CHANNEL_ID);
+            if (logChannel && logChannel.isTextBased()) {
+                logChannel.send({
+                    content: `🔇 **Global Timeout Action**\n` +
+                        `**User:** ${user.tag} (${user.id})\n` +
+                        `**Action:** ${durationMs ? `Timeout for ${durationStr}` : "Unmute"}\n` +
+                        `**Reason:** ${reason}\n` +
+                        `**Moderator:** ${interaction.user.tag}\n` +
+                        `**Success Rate:** ${successGuilds}/${successGuilds + failedGuilds + notFoundGuilds} servers`
+                });
+            }
+
+        } catch (error) {
+            console.error("Error in timeout command:", error);
+            return interaction.editReply({
+                content: `❌ An error occurred while processing the timeout: ${error.message}`,
+                flags: 64
+            });
         }
-
-        interaction.reply({
-            content: `✅ **${user.tag}** has been ${durationMs ? `timed out for **${durationStr}**` : "unmuted"} across all servers.\n\n🟢 Success: **${successGuilds}**\n🔴 Failed: **${failedGuilds}**`,
-            flags: 64,
-        });
-
-        console.log(`🔇 User ${user.tag} has been ${durationMs ? `timed out for ${durationStr}` : "unmuted"} globally.`);
     }
 });
-
 // Global Timeout Check
 setInterval(async () => {
     const expiredTimeouts = db.prepare("SELECT user_id FROM global_timeouts WHERE expires_at <= ?").all(Date.now());
@@ -3242,75 +3603,7 @@ setInterval(async () => {
         db.prepare("DELETE FROM global_timeouts WHERE user_id = ?").run(user_id);
         console.log(`⏳ Timeout removed for user ${user_id} globally.`);
     }
-}, 60000); // Check every minute
-
-// manage command roles handler
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-
-    const { commandName, options, guild } = interaction;
-
-    if (commandName === "tgc-managecommandroles") {
-        // Check if the user has administrative permissions
-        if (!interaction.member.permissions.has("Administrator")) {
-            return interaction.reply({
-                content: "You do not have permission to use this command. Only administrators can manage command roles.",
-                flags: 64
-            });
-        }
-
-        const action = options.getString("action");
-        const role = options.getRole("role");
-
-        if (!role) {
-            return interaction.reply({
-                content: "You must specify a valid role.",
-                flags: 64
-            });
-        }
-
-        const guildId = guild.id;
-
-        try {
-            if (action === "add") {
-                // Add role to the command_roles table
-                db.prepare(`
-                    INSERT OR IGNORE INTO command_roles (guild_id, role_id)
-                    VALUES (?, ?)
-                `).run(guildId, role.id);
-
-                await interaction.reply({
-                    content: `Role **${role.name}** has been added to the command roles list.`,
-                    flags: 64
-                });
-            } else if (action === "remove") {
-                // Remove role from the command_roles table
-                const result = db.prepare(`
-                    DELETE FROM command_roles 
-                    WHERE guild_id = ? AND role_id = ?
-                `).run(guildId, role.id);
-
-                if (result.changes === 0) {
-                    return interaction.reply({
-                        content: `Role **${role.name}** was not found in the command roles list.`,
-                        flags: 64
-                    });
-                }
-
-                await interaction.reply({
-                    content: `Role **${role.name}** has been removed from the command roles list.`,
-                    flags: 64
-                });
-            }
-        } catch (error) {
-            console.error("Error managing command roles:", error);
-            await interaction.reply({
-                content: "An error occurred while managing command roles.",
-                flags: 64
-            });
-        }
-    }
-});
+}, 60000); // Check every minute;
 
 // Handle /tgc-strike command
 client.on("interactionCreate", async (interaction) => {
@@ -3442,7 +3735,6 @@ client.on("interactionCreate", async (interaction) => {
         });
     }
 });
-
 // Check Strikes Command
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-checkstrikes") return;
@@ -3475,7 +3767,6 @@ client.on("interactionCreate", async (interaction) => {
 
     return interaction.reply({ embeds: [embed] });
 });
-
 // Remove Strike Command
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-removestrike") return;
@@ -3519,7 +3810,6 @@ client.on("interactionCreate", async (interaction) => {
         ephemeral: false
     });
 });
-
 // Reset Strikes Command
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-resetstrikes") return;
@@ -3542,7 +3832,139 @@ client.on("interactionCreate", async (interaction) => {
         ephemeral: false
     });
 });
+// Lock Channel Command
+client.on("interactionCreate", async interaction => {
+    if (!interaction.isChatInputCommand()) return;
 
+    if (interaction.commandName === "tgc-lock") {
+        // Defer the reply since permission operations might take a moment
+        await interaction.deferReply();
+
+        const targetChannel = interaction.options.getChannel("channel");
+
+        // Permission Check
+        if (!checkCommandPermission(interaction)) {
+            return interaction.editReply({
+                content: '❌ You do not have permission to use this command.',
+                flags: 64
+            });
+        }
+
+        // Check if channel exists
+        if (!targetChannel) {
+            return interaction.editReply({
+                content: "❌ Invalid channel specified!"
+            });
+        }
+
+        // Check if channel is text-based
+        if (!targetChannel.isTextBased()) {
+            return interaction.editReply({
+                content: "❌ This is not a text channel!"
+            });
+        }
+
+        try {
+            const everyoneRole = interaction.guild.roles.everyone;
+
+            // Get current permissions
+            const currentPerms = targetChannel.permissionOverwrites.cache.get(everyoneRole.id);
+            const currentSendPerm = currentPerms ? currentPerms.allow.has("SendMessages") ||
+                (!currentPerms.deny.has("SendMessages") && !currentPerms.allow.has("SendMessages")) :
+                true;
+
+            if (currentSendPerm) {
+                // Lock the channel
+                await targetChannel.permissionOverwrites.edit(everyoneRole, { SendMessages: false });
+                return interaction.editReply({
+                    content: `🔒 **Locked** ${targetChannel}! Only admins can send messages.`
+                });
+            } else {
+                // Unlock the channel
+                await targetChannel.permissionOverwrites.edit(everyoneRole, { SendMessages: null });
+                return interaction.editReply({
+                    content: `🔓 **Unlocked** ${targetChannel}! Everyone can send messages again.`
+                });
+            }
+        } catch (error) {
+            console.error("Error modifying channel permissions:", error);
+            return interaction.editReply({
+                content: "❌ Failed to modify channel permissions. Make sure I have the necessary permissions."
+            });
+        }
+    }
+});
+
+// ====================================
+// Set Command Roles and Log Channels
+// ====================================
+// manage command roles handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    const { commandName, options, guild } = interaction;
+
+    if (commandName === "tgc-managecommandroles") {
+        // Check if the user has administrative permissions
+        if (!interaction.member.permissions.has("Administrator")) {
+            return interaction.reply({
+                content: "You do not have permission to use this command. Only administrators can manage command roles.",
+                flags: 64
+            });
+        }
+
+        const action = options.getString("action");
+        const role = options.getRole("role");
+
+        if (!role) {
+            return interaction.reply({
+                content: "You must specify a valid role.",
+                flags: 64
+            });
+        }
+
+        const guildId = guild.id;
+
+        try {
+            if (action === "add") {
+                // Add role to the command_roles table
+                db.prepare(`
+                    INSERT OR IGNORE INTO command_roles (guild_id, role_id)
+                    VALUES (?, ?)
+                `).run(guildId, role.id);
+
+                await interaction.reply({
+                    content: `Role **${role.name}** has been added to the command roles list.`,
+                    flags: 64
+                });
+            } else if (action === "remove") {
+                // Remove role from the command_roles table
+                const result = db.prepare(`
+                    DELETE FROM command_roles 
+                    WHERE guild_id = ? AND role_id = ?
+                `).run(guildId, role.id);
+
+                if (result.changes === 0) {
+                    return interaction.reply({
+                        content: `Role **${role.name}** was not found in the command roles list.`,
+                        flags: 64
+                    });
+                }
+
+                await interaction.reply({
+                    content: `Role **${role.name}** has been removed from the command roles list.`,
+                    flags: 64
+                });
+            }
+        } catch (error) {
+            console.error("Error managing command roles:", error);
+            await interaction.reply({
+                content: "An error occurred while managing command roles.",
+                flags: 64
+            });
+        }
+    }
+});
 // Set Log Channel Command
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-setlogchannel') return;
@@ -3592,7 +4014,6 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 });
-
 // Set Alert Channel Command
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-setalertchannel') return;
@@ -3634,7 +4055,6 @@ client.on('interactionCreate', async interaction => {
         });
     }
 });
-
 // New User Alert System
 client.on('guildMemberAdd', async member => {
     try {
@@ -3683,178 +4103,61 @@ client.on('guildMemberAdd', async member => {
     }
 });
 
-// Open Ticket Command
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-openticket') return;
+// ====================================
+//           Ticket System
+// ====================================
+// Helper function to format moderator application transcript
+function formatModApplicationTranscript(messages) {
+    let transcript = '=== MODERATOR APPLICATION TRANSCRIPT ===\n\n';
 
-    // Create the select menu for ticket type
-    const typeMenu = new StringSelectMenuBuilder()
-        .setCustomId('selectTicketType')
-        .setPlaceholder('Select the type of ticket')
-        .addOptions([
-            { 
-                label: 'Support', 
-                value: 'support', 
-                description: 'General support ticket',
-                emoji: '❓'
-            },
-            { 
-                label: 'Report', 
-                value: 'report', 
-                description: 'Report a user or issue',
-                emoji: '🚨'
-            },
-            { 
-                label: 'Moderator Application', 
-                value: 'modapp', 
-                description: 'Apply for a moderator position',
-                emoji: '👮'
+    // Find application data
+    const applicationEmbed = messages.find(msg =>
+        msg.embeds[0]?.title === "📝 Moderator Application Summary"
+    );
+
+    if (applicationEmbed && applicationEmbed.embeds[0]) {
+        const embed = applicationEmbed.embeds[0];
+        transcript += `Applicant: ${embed.description}\n\n`;
+
+        // Add all Q&A
+        embed.fields.forEach(field => {
+            if (field.name.startsWith('Q')) {
+                transcript += `${field.name}:\n${field.value}\n\n`;
             }
-        ]);
+        });
 
-    // Create embed for ticket selection
-    const ticketEmbed = new EmbedBuilder()
-        .setTitle('🎫 Create a Ticket')
-        .setDescription([
-            'Please select the type of ticket you would like to create:',
-            '',
-            '❓ **Support** - General help and support',
-            '🚨 **Report** - Report a user or issue',
-            '👮 **Moderator Application** - Apply to become a moderator'
-        ].join('\n'))
-        .setColor('#2F3136')
-        .setFooter({ text: 'Select an option below to continue' });
+        // Add user info
+        const userInfoFields = embed.fields.filter(field =>
+            field.name.includes('User ID') || field.name.includes('Account Created')
+        );
 
-    const row = new ActionRowBuilder().addComponents(typeMenu);
-
-    await interaction.reply({
-        embeds: [ticketEmbed],
-        components: [row],
-        flags: 64
-    });
-
-    // Create collector for menu interaction
-    const filter = i => i.user.id === interaction.user.id;
-    const collector = interaction.channel.createMessageComponentCollector({ 
-        filter, 
-        time: 30000,
-        max: 1
-    });
-
-    collector.on('end', collected => {
-        if (collected.size === 0) {
-            interaction.editReply({
-                content: '⏰ Ticket creation timed out. Please try again.',
-                components: [],
-                embeds: [],
-                flags: 64
-            });
-        }
-    });
-});
-
-// Handle ticket type selection
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectTicketType') return;
-
-    const selectedType = interaction.values[0];
-
-    try {
-        switch (selectedType) {
-            case 'report':
-                // Show report categories
-                const reportCategories = new StringSelectMenuBuilder()
-                    .setCustomId('selectReportCategory')
-                    .setPlaceholder('Select a category for your report')
-                    .addOptions([
-                        { label: 'Harassment', value: 'harassment', emoji: '😠' },
-                        { label: 'Spam', value: 'spam', emoji: '🔨' },
-                        { label: 'Scam', value: 'scam', emoji: '💸' },
-                        { label: 'Other', value: 'other', emoji: '❓' },
-                    ]);
-
-                const reportEmbed = new EmbedBuilder()
-                    .setTitle('🚨 Create a Report')
-                    .setDescription('Please select the category that best matches your report:')
-                    .setColor('#FF0000');
-
-                await interaction.update({
-                    embeds: [reportEmbed],
-                    components: [new ActionRowBuilder().addComponents(reportCategories)],
-                    flags: 64
-                });
-                break;
-
-            case 'modapp':
-                // Create mod application channel
-                const channel = await createTicketChannel(interaction, 'modapp');
-                if (channel) {
-                    await interaction.update({
-                        content: `✅ Application channel created: ${channel}`,
-                        components: [],
-                        embeds: [],
-                        flags: 64
-                    });
-                }
-                break;
-
-            case 'support':
-                // Create support ticket channel
-                const supportChannel = await createTicketChannel(interaction, 'support');
-                if (supportChannel) {
-                    await interaction.update({
-                        content: `✅ Support ticket created: ${supportChannel}`,
-                        components: [],
-                        embeds: [],
-                        flags: 64
-                    });
-                }
-                break;
-        }
-    } catch (error) {
-        console.error('Error handling ticket type selection:', error);
-        await interaction.update({
-            content: '❌ An error occurred while creating your ticket. Please try again.',
-            components: [],
-            embeds: [],
-            flags: 64
+        transcript += '\n=== USER INFO ===\n';
+        userInfoFields.forEach(field => {
+            transcript += `${field.name}: ${field.value}\n`;
         });
     }
-});
 
-// Handle report category selection
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isStringSelectMenu()) return;
+    // Add all subsequent messages (discussion, decisions, etc.)
+    transcript += '\n=== TICKET DISCUSSION ===\n\n';
+    messages.forEach(msg => {
+        if (!msg.embeds.length || msg.embeds[0]?.title !== "📝 Moderator Application Summary") {
+            const timestamp = new Date(msg.createdTimestamp).toLocaleString();
+            transcript += `[${timestamp}] ${msg.author.tag}: ${msg.content}\n`;
+        }
+    });
 
-    if (interaction.customId === 'selectReportCategory') {
-        const selectedCategory = interaction.values[0];
-        await createTicketChannel(interaction, 'report', selectedCategory);
-    }
-});
-
-// Application questions array
-const applicationQuestions = [
-    "What is your age?",
-    "What timezone are you in?",
-    "Do you have any previous moderation experience? If yes, please describe.",
-    "Why do you want to become a moderator?",
-    "How would you handle a situation where two users are arguing?",
-    "What do you think are the most important qualities of a moderator?",
-    "Have you read and do you understand our server rules?",
-    "are there any changes you would like to see happen in the server?",
-    "Is there anything else you'd like to add to your application?"
-];
-
+    return transcript;
+}
 // Create a ticket channel
 async function createTicketChannel(interaction, selectedType, selectedCategory = null) {
-    const guild = interaction.guild;
-    const user = interaction.user;
-    const botId = interaction.client.user.id;
-    const categoryName = selectedCategory ? `Report-${selectedCategory}` : selectedType;
-    const channelName = `${categoryName}-${user.username.toLowerCase().replace(/[^a-z0-9-]/g, '')}`;
-
     try {
-        const allRoles = await getAllGuildRoles(guild.id); // Added await
+        const guild = interaction.guild;
+        const user = interaction.user;
+        const botId = interaction.client.user.id;
+        const categoryName = selectedCategory ? `Report-${selectedCategory}` : selectedType;
+        const channelName = `${categoryName}-${user.username.toLowerCase().replace(/[^a-z0-9-]/g, '')}`;
+
+        const allRoles = await getAllGuildRoles(guild.id);
         const permissionOverwrites = [
             {
                 id: guild.id,
@@ -3883,11 +4186,6 @@ async function createTicketChannel(interaction, selectedType, selectedCategory =
             permissionOverwrites
         });
 
-        await interaction.reply({
-            content: `✅ Ticket created: ${channel}`,
-            flags: 64 
-        });
-
         if (selectedType === 'modapp') {
             channel.applicationData = {
                 userId: user.id,
@@ -3911,12 +4209,11 @@ async function createTicketChannel(interaction, selectedType, selectedCategory =
 
             await channel.send({ embeds: [welcomeEmbed] });
 
-            const collector = channel.createMessageCollector({ 
+            const collector = channel.createMessageCollector({
                 filter: m => m.author.id === user.id,
                 time: 300000
             });
 
-            // Removed duplicate 'end' event listener
             collector.on('collect', async (message) => {
                 if (message.content.toLowerCase() === 'yes') {
                     collector.stop('ready');
@@ -3932,14 +4229,13 @@ async function createTicketChannel(interaction, selectedType, selectedCategory =
                     channel.send("⏰ Application timed out. Please start a new application.");
                 }
             });
-
         } else {
             const ticketEmbed = new EmbedBuilder()
                 .setTitle(selectedType === 'report' ? "🚨 Report Ticket" : "❓ Support Ticket")
                 .setDescription([
                     `Welcome ${user}!`,
                     "",
-                    selectedType === 'report' 
+                    selectedType === 'report'
                         ? `Please provide details about your report regarding **${selectedCategory}**:`
                         : "Please describe your issue in detail:",
                     "",
@@ -3955,13 +4251,9 @@ async function createTicketChannel(interaction, selectedType, selectedCategory =
 
     } catch (error) {
         console.error("❌ Error creating ticket channel:", error);
-        await interaction.reply({
-            content: "❌ There was an error creating your ticket. Please try again later.",
-            flags: 64
-        });
+        throw error;
     }
 }
-
 // Function to ask application questions
 async function askQuestion(channel, user, questionIndex) {
     if (questionIndex >= applicationQuestions.length) {
@@ -3977,7 +4269,7 @@ async function askQuestion(channel, user, questionIndex) {
 
     await channel.send({ embeds: [questionEmbed] });
 
-    const collector = channel.createMessageCollector({ 
+    const collector = channel.createMessageCollector({
         filter: m => m.author.id === user.id, // Fixed: user.Id to user.id
         time: 300000
     });
@@ -3994,7 +4286,7 @@ async function askQuestion(channel, user, questionIndex) {
         if (!channel.applicationData) {
             channel.applicationData = { answers: [] };
         }
-        
+
         channel.applicationData.answers[questionIndex] = message.content;
         collector.stop('answered');
         await askQuestion(channel, user, questionIndex + 1);
@@ -4008,7 +4300,6 @@ async function askQuestion(channel, user, questionIndex) {
         }
     });
 }
-
 // Function to create application summary
 async function createApplicationSummary(channel, user) {
     const answers = channel.applicationData.answers;
@@ -4056,7 +4347,6 @@ async function createApplicationSummary(channel, user) {
         components: [buttons]
     });
 }
-
 // Function to Fetch ALL Role IDs for This Guild
 function getAllGuildRoles(guildId) {
     try {
@@ -4067,7 +4357,162 @@ function getAllGuildRoles(guildId) {
         return []; // Return an empty array if something goes wrong
     }
 }
+// Open Ticket Command
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-openticket') return;
 
+    // Create the select menu for ticket type
+    const typeMenu = new StringSelectMenuBuilder()
+        .setCustomId('selectTicketType')
+        .setPlaceholder('Select the type of ticket')
+        .addOptions([
+            {
+                label: 'Support',
+                value: 'support',
+                description: 'General support ticket',
+                emoji: '❓'
+            },
+            {
+                label: 'Report',
+                value: 'report',
+                description: 'Report a user or issue',
+                emoji: '🚨'
+            },
+            {
+                label: 'Moderator Application',
+                value: 'modapp',
+                description: 'Apply for a moderator position',
+                emoji: '👮'
+            }
+        ]);
+
+    // Create embed for ticket selection
+    const ticketEmbed = new EmbedBuilder()
+        .setTitle('🎫 Create a Ticket')
+        .setDescription([
+            'Please select the type of ticket you would like to create:',
+            '',
+            '❓ **Support** - General help and support',
+            '🚨 **Report** - Report a user or issue',
+            '👮 **Moderator Application** - Apply to become a moderator'
+        ].join('\n'))
+        .setColor('#2F3136')
+        .setFooter({ text: 'Select an option below to continue' });
+
+    const row = new ActionRowBuilder().addComponents(typeMenu);
+
+    await interaction.reply({
+        embeds: [ticketEmbed],
+        components: [row],
+        flags: 64
+    });
+
+    // Create collector for menu interaction
+    const filter = i => i.user.id === interaction.user.id;
+    const collector = interaction.channel.createMessageComponentCollector({
+        filter,
+        time: 30000,
+        max: 1
+    });
+
+    collector.on('end', collected => {
+        if (collected.size === 0) {
+            interaction.editReply({
+                content: '⏰ Ticket creation timed out. Please try again.',
+                components: [],
+                embeds: [],
+                flags: 64
+            });
+        }
+    });
+});
+// Handle ticket type selection
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu() || interaction.customId !== 'selectTicketType') return;
+
+    const selectedType = interaction.values[0];
+
+    try {
+        switch (selectedType) {
+            case 'report':
+                // Show report categories
+                const reportCategories = new StringSelectMenuBuilder()
+                    .setCustomId('selectReportCategory')
+                    .setPlaceholder('Select a category for your report')
+                    .addOptions([
+                        { label: 'Harassment', value: 'harassment', emoji: '😠' },
+                        { label: 'Spam', value: 'spam', emoji: '🔨' },
+                        { label: 'Scam', value: 'scam', emoji: '💸' },
+                        { label: 'Other', value: 'other', emoji: '❓' },
+                    ]);
+
+                const reportEmbed = new EmbedBuilder()
+                    .setTitle('🚨 Create a Report')
+                    .setDescription('Please select the category that best matches your report:')
+                    .setColor('#FF0000');
+
+                await interaction.update({
+                    embeds: [reportEmbed],
+                    components: [new ActionRowBuilder().addComponents(reportCategories)]
+                });
+                break;
+
+            case 'modapp':
+                // Create mod application channel
+                const channel = await createTicketChannel(interaction, 'modapp');
+                if (channel) {
+                    await interaction.update({
+                        content: `✅ Application channel created: ${channel}`,
+                        components: [],
+                        embeds: []
+                    });
+                }
+                break;
+
+            case 'support':
+                // Create support ticket channel
+                const supportChannel = await createTicketChannel(interaction, 'support');
+                if (supportChannel) {
+                    await interaction.update({
+                        content: `✅ Support ticket created: ${supportChannel}`,
+                        components: [],
+                        embeds: []
+                    });
+                }
+                break;
+        }
+    } catch (error) {
+        console.error('Error handling ticket type selection:', error);
+        // If interaction hasn't been replied to yet, send an error message
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+                content: '❌ An error occurred while creating your ticket. Please try again.',
+                ephemeral: true
+            });
+        }
+    }
+});
+// Handle report category selection
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isStringSelectMenu()) return;
+
+    if (interaction.customId === 'selectReportCategory') {
+        const selectedCategory = interaction.values[0];
+        await createTicketChannel(interaction, 'report', selectedCategory);
+    }
+});
+// Application questions array
+const applicationQuestions = [
+    "What is your age?",
+    "What timezone are you in?",
+    "Do you have any previous moderation experience? If yes, please describe.",
+    "Why do you want to become a moderator?",
+    "How would you handle a situation where two users are arguing?",
+    "What do you think are the most important qualities of a moderator?",
+    "Have you read and do you understand our server rules?",
+    "are there any changes you would like to see happen in the server?",
+    "Is there anything else you'd like to add to your application?"
+];
 // Close Ticket Command
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-closeticket') return;
@@ -4105,7 +4550,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const logChannelId = result.log_channel;
         const logChannel = interaction.guild.channels.cache.get(logChannelId);
-        
+
         if (!logChannel) {
             return interaction.reply({
                 content: '❌ The configured log channel is invalid or inaccessible. Please set it again.',
@@ -4118,7 +4563,7 @@ client.on('interactionCreate', async (interaction) => {
 
         // Fetch messages from the ticket channel
         const messages = await channel.messages.fetch({ limit: 100 });
-        
+
         // Create transcript
         let transcript = '';
         const messageArray = Array.from(messages.values()).reverse();
@@ -4133,13 +4578,13 @@ client.on('interactionCreate', async (interaction) => {
                 .map(msg => {
                     const timestamp = new Date(msg.createdTimestamp).toLocaleString();
                     const content = msg.content || '[No Text Content]';
-                    const attachments = msg.attachments.size ? 
+                    const attachments = msg.attachments.size ?
                         '\nAttachments: ' + Array.from(msg.attachments.values())
                             .map(att => att.url)
                             .join(', ') : '';
-                    const embeds = msg.embeds.length ? 
+                    const embeds = msg.embeds.length ?
                         '\nEmbeds: ' + msg.embeds.length + ' embed(s)' : '';
-                    
+
                     return `[${timestamp}] ${msg.author.tag}:\n${content}${attachments}${embeds}\n`;
                 })
                 .join('\n');
@@ -4191,87 +4636,85 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 });
-
 // Handle application approval
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-// Handle approval button
-if (interaction.customId.startsWith('approve_app_')) {
-    // Check permissions
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: '❌ You do not have permission to approve applications.',
-            flags: 64
-        });
-    }
+    // Handle approval button
+    if (interaction.customId.startsWith('approve_app_')) {
+        // Check permissions
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: '❌ You do not have permission to approve applications.',
+                flags: 64
+            });
+        }
 
-    const applicantId = interaction.customId.split('_')[2];
-    try {
-        const applicant = await interaction.guild.members.fetch(applicantId);
-        
-        // Create approval embed
-        const approvalEmbed = new EmbedBuilder()
-            .setTitle("✅ Application Approved")
-            .setDescription([
-                `Congratulations ${applicant}! Your moderator application has been approved.`,
-                "",
-                "A staff member will contact you soon with further information.",
-                "Thank you for your interest in helping our community!"
-            ].join('\n'))
-            .setColor("#00FF00")
-            .setTimestamp();
-
-        // Send DM to applicant
+        const applicantId = interaction.customId.split('_')[2];
         try {
-            await applicant.send({ embeds: [approvalEmbed] });
-        } catch (error) {
-            console.error("Could not DM applicant:", error);
-        }
+            const applicant = await interaction.guild.members.fetch(applicantId);
 
-        // Get log channel
-        const logChannelId = db.prepare('SELECT log_channel FROM guild_settings WHERE guild_id = ?')
-            .get(interaction.guild.id)?.log_channel;
+            // Create approval embed
+            const approvalEmbed = new EmbedBuilder()
+                .setTitle("✅ Application Approved")
+                .setDescription([
+                    `Congratulations ${applicant}! Your moderator application has been approved.`,
+                    "",
+                    "A staff member will contact you soon with further information.",
+                    "Thank you for your interest in helping our community!"
+                ].join('\n'))
+                .setColor("#00FF00")
+                .setTimestamp();
 
-        if (logChannelId) {
-            const logChannel = await interaction.guild.channels.fetch(logChannelId);
-            if (logChannel) {
-                await logChannel.send({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setTitle("📝 Moderator Application Approved")
-                            .setDescription([
-                                `**Applicant:** ${applicant.user.tag}`,
-                                `**Approved by:** ${interaction.user.tag}`,
-                                `**Time:** <t:${Math.floor(Date.now() / 1000)}:F>`
-                            ].join('\n'))
-                            .setColor("#00FF00")
-                    ]
-                });
+            // Send DM to applicant
+            try {
+                await applicant.send({ embeds: [approvalEmbed] });
+            } catch (error) {
+                console.error("Could not DM applicant:", error);
             }
+
+            // Get log channel
+            const logChannelId = db.prepare('SELECT log_channel FROM guild_settings WHERE guild_id = ?')
+                .get(interaction.guild.id)?.log_channel;
+
+            if (logChannelId) {
+                const logChannel = await interaction.guild.channels.fetch(logChannelId);
+                if (logChannel) {
+                    await logChannel.send({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle("📝 Moderator Application Approved")
+                                .setDescription([
+                                    `**Applicant:** ${applicant.user.tag}`,
+                                    `**Approved by:** ${interaction.user.tag}`,
+                                    `**Time:** <t:${Math.floor(Date.now() / 1000)}:F>`
+                                ].join('\n'))
+                                .setColor("#00FF00")
+                        ]
+                    });
+                }
+            }
+            // Acknowledge the interaction before deleting the channel
+            await interaction.reply({
+                content: "✅ Application approved. This channel will be deleted in 5 seconds.",
+                flags: 64
+            });
+
+            // Delete the channel after a short delay
+            setTimeout(async () => {
+                await interaction.channel.delete()
+                    .catch(error => console.error("Error deleting channel:", error));
+            }, 5000);
+
+        } catch (error) {
+            console.error("Error handling application approval:", error);
+            await interaction.reply({
+                content: "❌ An error occurred while processing the approval.",
+                flags: 64
+            });
         }
-        // Acknowledge the interaction before deleting the channel
-        await interaction.reply({
-            content: "✅ Application approved. This channel will be deleted in 5 seconds.",
-            flags: 64
-        });
-
-        // Delete the channel after a short delay
-        setTimeout(async () => {
-            await interaction.channel.delete()
-                .catch(error => console.error("Error deleting channel:", error));
-        }, 5000);
-
-    } catch (error) {
-        console.error("Error handling application approval:", error);
-        await interaction.reply({
-            content: "❌ An error occurred while processing the approval.",
-            flags: 64
-        });
     }
-}
 });
-
 // Handle deny button
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton() || !interaction.customId.startsWith('deny_app_')) return;
@@ -4303,7 +4746,6 @@ client.on('interactionCreate', async (interaction) => {
 
     await interaction.showModal(modal);
 });
-
 // Handle denial reason modal submission
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isModalSubmit() || !interaction.customId.startsWith('deny_reason_')) return;
@@ -4313,7 +4755,7 @@ client.on('interactionCreate', async (interaction) => {
 
     try {
         const applicant = await interaction.guild.members.fetch(applicantId);
-        
+
         // Create denial embed
         const denialEmbed = new EmbedBuilder()
             .setTitle("❌ Application Denied")
@@ -4328,11 +4770,13 @@ client.on('interactionCreate', async (interaction) => {
             .setColor("#FF0000")
             .setTimestamp();
 
-        // Send DM to applicant
+        // Send DM to applicant and store success/failure status
+        let dmSent = true;
         try {
             await applicant.send({ embeds: [denialEmbed] });
         } catch (error) {
             console.error("Could not DM applicant:", error);
+            dmSent = false;
         }
 
         // Get log channel
@@ -4350,7 +4794,8 @@ client.on('interactionCreate', async (interaction) => {
                                 `**Applicant:** ${applicant.user.tag}`,
                                 `**Denied by:** ${interaction.user.tag}`,
                                 `**Reason:** ${reason}`,
-                                `**Time:** <t:${Math.floor(Date.now() / 1000)}:F>`
+                                `**Time:** <t:${Math.floor(Date.now() / 1000)}:F>`,
+                                dmSent ? '' : '\n⚠️ **Note:** Unable to send DM to applicant'
                             ].join('\n'))
                             .setColor("#FF0000")
                     ]
@@ -4360,7 +4805,7 @@ client.on('interactionCreate', async (interaction) => {
 
         // Acknowledge the interaction before deleting the channel
         await interaction.reply({
-            content: "❌ Application denied. This channel will be deleted in 5 seconds.",
+            content: `❌ Application denied. ${!dmSent ? '\n⚠️ Note: Could not send DM to the applicant.' : ''}\nThis channel will be deleted in 5 seconds.`,
             flags: 64
         });
 
@@ -4378,7 +4823,6 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 });
-
 // Handle interview button
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton() || !interaction.customId.startsWith('interview_app_')) return;
@@ -4420,7 +4864,6 @@ client.on('interactionCreate', async (interaction) => {
 
     await interaction.showModal(modal);
 });
-
 // Handle interview scheduling modal submission
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isModalSubmit() || !interaction.customId.startsWith('schedule_interview_')) return;
@@ -4431,7 +4874,7 @@ client.on('interactionCreate', async (interaction) => {
 
     try {
         const applicant = await interaction.guild.members.fetch(applicantId);
-        
+
         // Create interview notification embed
         const interviewEmbed = new EmbedBuilder()
             .setTitle("🗣️ Interview Scheduled")
@@ -4492,193 +4935,163 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// Helper function to format moderator application transcript
-function formatModApplicationTranscript(messages) {
-    let transcript = '=== MODERATOR APPLICATION TRANSCRIPT ===\n\n';
-    
-    // Find application data
-    const applicationEmbed = messages.find(msg => 
-        msg.embeds[0]?.title === "📝 Moderator Application Summary"
-    );
+// =====================================
+//        Send Message Command
+// =====================================
+const messageCapture = new Map();
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-sendmessage') return;
 
-    if (applicationEmbed && applicationEmbed.embeds[0]) {
-        const embed = applicationEmbed.embeds[0];
-        transcript += `Applicant: ${embed.description}\n\n`;
-        
-        // Add all Q&A
-        embed.fields.forEach(field => {
-            if (field.name.startsWith('Q')) {
-                transcript += `${field.name}:\n${field.value}\n\n`;
-            }
-        });
-        
-        // Add user info
-        const userInfoFields = embed.fields.filter(field => 
-            field.name.includes('User ID') || field.name.includes('Account Created')
-        );
-        
-        transcript += '\n=== USER INFO ===\n';
-        userInfoFields.forEach(field => {
-            transcript += `${field.name}: ${field.value}\n`;
-        });
-    }
+    try {
+        const targetChannel = interaction.options.getChannel('channel');
 
-    // Add all subsequent messages (discussion, decisions, etc.)
-    transcript += '\n=== TICKET DISCUSSION ===\n\n';
-    messages.forEach(msg => {
-        if (!msg.embeds.length || msg.embeds[0]?.title !== "📝 Moderator Application Summary") {
-            const timestamp = new Date(msg.createdTimestamp).toLocaleString();
-            transcript += `[${timestamp}] ${msg.author.tag}: ${msg.content}\n`;
-        }
-    });
-
-    return transcript;
-}
-
-// Send Message Command
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isModalSubmit()) return;
-
-    if (interaction.customId === "sendmessage_modal") {
-        const userId = interaction.user.id;
-        const targetChannelId = client.tempChannelStore?.[userId];
-        
-        if (!targetChannelId) {
-            return interaction.reply({ 
-                content: "❌ No channel was selected.", 
-                flags: 64 
-            });
-        }
-
-        const targetChannel = await client.channels.fetch(targetChannelId).catch(() => null);
+        // Verify channel is valid and text-based
         if (!targetChannel || !targetChannel.isTextBased()) {
-            return interaction.reply({ 
-                content: "❌ The selected channel is no longer valid.", 
-                flags: 64 
+            return interaction.reply({
+                content: "❌ Please select a valid text channel.",
+                ephemeral: true
             });
         }
 
-        let messageContent = interaction.fields.getTextInputValue("message_content");
-
-        // Process channel mentions in the message content
-        // This regex finds patterns like #channel-name and replaces them with proper channel mentions
-        const channelMentionRegex = /#([a-zA-Z0-9_-]+)/g;
-        
-        // Replace channel names with proper mentions if they exist
-        messageContent = messageContent.replace(channelMentionRegex, (match, channelName) => {
-            const channel = interaction.guild.channels.cache.find(
-                ch => ch.name.toLowerCase() === channelName.toLowerCase()
-            );
-            return channel ? `<#${channel.id}>` : match;
+        // Store the target channel and enable message capture for this user
+        messageCapture.set(interaction.user.id, {
+            channel: targetChannel,
+            timestamp: Date.now()
         });
 
-        try {
-            // Send message with proper formatting
-            await targetChannel.send({
-                content: messageContent || "\u200B", // Add empty character if content is empty
-                allowedMentions: { parse: ['users', 'roles', 'channels'] }
-            });
+        // Send instructions to the user
+        await interaction.reply({
+            content: `✏ **Type your message in this channel.** It will be sent to ${targetChannel}.\n` +
+                `🔹 Type \`cancel\` to cancel the operation.\n` +
+                `⏳ You have **5 minutes** to type your message.`,
+            ephemeral: true
+        });
 
-            delete client.tempChannelStore[userId];
+        // Clean up after 5 minutes (Auto timeout)
+        setTimeout(() => {
+            if (messageCapture.has(interaction.user.id)) {
+                messageCapture.delete(interaction.user.id);
+                interaction.followUp({
+                    content: "⚠ Message capture timed out. Please try again.",
+                    ephemeral: true
+                }).catch(() => { });
+            }
+        }, 5 * 60 * 1000);
 
-            await interaction.reply({ 
-                content: `✅ Message sent to ${targetChannel}!`, 
-                flags: 64 
-            });
-        } catch (error) {
-            console.error('Error sending message:', error);
-            await interaction.reply({ 
-                content: "❌ Failed to send message. Please try again.", 
-                flags: 64 
-            });
-        }
+    } catch (error) {
+        console.error('Error initiating message capture:', error);
+        await interaction.reply({
+            content: "❌ An error occurred while processing your request.",
+            ephemeral: true
+        });
     }
 });
+// Handle message capture
+client.on('messageCreate', async message => {
+    if (message.author.bot || !messageCapture.has(message.author.id)) return;
 
-// Handle message submission from the modal
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isModalSubmit()) return;
+    const captureData = messageCapture.get(message.author.id);
+    const targetChannel = captureData.channel;
 
-    if (interaction.customId === "sendmessage_modal") {
-        const userId = interaction.user.id;
-        const targetChannelId = client.tempChannelStore?.[userId];
-        
-        if (!targetChannelId) {
-            return interaction.reply({ 
-                content: "❌ No channel was selected.", 
-                flags: 64 
-            });
-        }
+    // Handle cancel command
+    if (message.content.toLowerCase() === 'cancel') {
+        messageCapture.delete(message.author.id);
+        return message.reply('🚫 **Message sending cancelled.**');
+    }
 
-        const targetChannel = await client.channels.fetch(targetChannelId).catch(() => null);
-        if (!targetChannel || !targetChannel.isTextBased()) {
-            return interaction.reply({ 
-                content: "❌ The selected channel is no longer valid.", 
-                flags: 64 
-            });
-        }
+    // Process channel mentions in the message content
+    let messageContent = message.content;
+    const channelMentionRegex = /#([a-zA-Z0-9_-]+)/g;
+    messageContent = messageContent.replace(channelMentionRegex, (match, channelName) => {
+        const channel = message.guild.channels.cache.find(
+            ch => ch.name.toLowerCase() === channelName.toLowerCase()
+        );
+        return channel ? `<#${channel.id}>` : match;
+    });
 
-        const messageContent = interaction.fields.getTextInputValue("message_content");
+    // Create preview embed
+    const previewEmbed = new EmbedBuilder()
+        .setTitle('📢 Message Preview')
+        .setDescription(messageContent)
+        .addFields(
+            { name: '📍 Target Channel', value: targetChannel.toString() },
+            { name: '✏ Character Count', value: messageContent.length.toString() }
+        )
+        .setColor('#00ff00')
+        .setTimestamp();
 
+    // Create confirm/cancel buttons
+    const buttons = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId(`tgc_send_confirm_${message.author.id}`)
+                .setLabel('✔ Send Message')
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`tgc_send_cancel_${message.author.id}`)
+                .setLabel('✖ Cancel')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+    // Store the message content temporarily
+    messageCapture.set(message.author.id, {
+        ...captureData,
+        content: messageContent
+    });
+
+    // Send preview with buttons
+    await message.reply({
+        content: '🔍 **Review your message:**',
+        embeds: [previewEmbed],
+        components: [buttons]
+    });
+});
+// Handle button interactions (Self-contained with unique IDs)
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton()) return;
+
+    const userId = interaction.user.id;
+    const captureData = messageCapture.get(userId);
+
+    // Ensure the interaction is relevant to this system
+    if (!captureData || !interaction.customId.startsWith(`tgc_send_`)) return;
+
+    if (interaction.customId === `tgc_send_confirm_${userId}`) {
         try {
-            // Send message with proper formatting
-            await targetChannel.send({
-                content: messageContent || "\u200B", // Add empty character if content is empty
+            // Send the message
+            await captureData.channel.send({
+                content: captureData.content,
                 allowedMentions: { parse: ['users', 'roles'] }
             });
 
-            delete client.tempChannelStore[userId];
-
-            await interaction.reply({ 
-                content: `✅ Message sent to ${targetChannel}!`, 
-                flags: 64 
+            await interaction.update({
+                content: `✅ **Message sent to ${captureData.channel}!**`,
+                embeds: [],
+                components: [],
             });
         } catch (error) {
             console.error('Error sending message:', error);
-            await interaction.reply({ 
-                content: "❌ Failed to send message. Please try again.", 
-                flags: 64 
+            await interaction.update({
+                content: '❌ **Failed to send message.** Please try again.',
+                embeds: [],
+                components: [],
             });
         }
-    }
-});
-
-// Lock Channel Command
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-
-    if (interaction.commandName === "tgc-lock") {
-        const targetChannel = interaction.options.getChannel("channel");
-
-        // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
+    } else if (interaction.customId === `tgc_send_cancel_${userId}`) {
+        await interaction.update({
+            content: '🚫 **Message cancelled.**',
+            embeds: [],
+            components: [],
         });
     }
 
-        if (!targetChannel.isTextBased()) {
-            return interaction.reply({ content: "❌ This is not a text channel!"});
-        }
-
-        const everyoneRole = interaction.guild.roles.everyone;
-        const permissions = targetChannel.permissionsFor(everyoneRole);
-
-        if (permissions.has("SendMessages")) {
-            await targetChannel.permissionOverwrites.edit(everyoneRole, { SendMessages: false });
-            return interaction.reply({ content: `🔒 **Locked** ${targetChannel}! Only admins can send messages.`});
-        } else {
-            await targetChannel.permissionOverwrites.edit(everyoneRole, { SendMessages: true });
-            return interaction.reply({ content: `🔓 **Unlocked** ${targetChannel}! Everyone can send messages again.`});
-        }
-    }
+    // Clean up after interaction
+    messageCapture.delete(userId);
 });
 
 // ===============================
 // Auto-Publishing & Forwarding
 // ===============================
-
 // Automatically publishes messages sent in announcement/news channels.
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -4687,12 +5100,12 @@ client.on("interactionCreate", async interaction => {
         const channel = interaction.options.getChannel("channel");
 
         // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
-    }
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: 'You do not have permission to use this command.',
+                flags: 64
+            });
+        }
 
         // Ensure it's an announcement channel
         if (channel.type !== ChannelType.GuildAnnouncement) {
@@ -4721,7 +5134,6 @@ client.on("interactionCreate", async interaction => {
         console.log(`🔄 Auto-publishing toggled to ${newState ? "enabled" : "disabled"} for channel ${channel.id}`);
     }
 });
-
 // Auto-publishing system (checks per-channel toggle)
 client.on("messageCreate", async (message) => {
     if (message.author.bot) return;
@@ -4745,7 +5157,6 @@ client.on("messageCreate", async (message) => {
         }
     }
 });
-
 // forward Channel Command
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
@@ -4756,12 +5167,12 @@ client.on("interactionCreate", async (interaction) => {
         const colorName = interaction.options.getString("color") || "Default (Teal)"; // Default color if none is chosen
 
         // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
-    }
+        if (!checkCommandPermission(interaction)) {
+            return interaction.reply({
+                content: 'You do not have permission to use this command.',
+                flags: 64
+            });
+        }
 
         // Validate color choice
         const embedColor = EMBED_COLORS[colorName];
@@ -4818,16 +5229,15 @@ client.on("interactionCreate", async (interaction) => {
         }
     }
 });
-
 // ✅ Debugging Message Listener
 client.on("messageCreate", async (message) => {
     if (message.author.bot || !message.guild) return;
-    
+
     console.log(`📩 Message detected in ${message.channel.id}: ${message.content}`);
 
     // Fetch target channel and embed color from DB
     const row = db.prepare("SELECT target_channel_id, embed_color FROM channel_links WHERE source_channel_id = ?").get(message.channel.id);
-    
+
     if (!row) {
         console.log(`⚠️ No forwarding found for channel ${message.channel.id}`);
         return;
@@ -4873,29 +5283,25 @@ client.on("messageCreate", async (message) => {
 // ===============================
 //          Fun Commands
 // ===============================
-
 // Death Battle Command data
-
 const WEAPON_GIFS = {
-    omniwrench: [
+    // Map specific weapon names to their gifs
+    "Omniwrench": [
         "https://media.tenor.com/E7VxfVAeqOIAAAAC/sword-attack.gif",
         "https://media.tenor.com/E6c_Qj_TIhQAAAAC/sword-slice.gif"
     ],
-    ryno: [
+    "RYNO": [
         "https://media.tenor.com/xJlx-a0UlLcAAAAd/metal-gear-rising-raiden.gif",
         "https://media.tenor.com/DrSELrunh9gAAAAC/black-blackman.gif"
     ],
-    default: [
+    // Add more weapon-specific gifs...
+    "default": [
         "https://media.tenor.com/K6DgsMs918UAAAAi/xqcsmash-rage.gif",
-        "https://media.tenor.com/p9_q4Bfmt8YAAAAd/two-people-fighting-fight.gif",
-        "https://media.tenor.com/qC6EyHfCQncAAAAd/rock-lee-gaara.gif",
-        "https://media.tenor.com/3_bw0IE43nQAAAAd/fawlty-towers-john-cleese.gif"
+        "https://media.tenor.com/p9_q4Bfmt8YAAAAd/two-people-fighting-fight.gif"
     ]
 };
-
 const BASE_HP = 100;
 const BATTLE_DELAY = 1000;
-
 // Utility functions
 function getEquippedWeapon(equipment) {
     const weapon = equipment.find(item => item.category.toLowerCase() === 'weapon');
@@ -4904,20 +5310,28 @@ function getEquippedWeapon(equipment) {
         type: weapon ? weapon.name.toLowerCase().split(' ')[0] : "default"
     };
 }
-
 function calculatePlayerBonuses(userId) {
-    return shopDB.prepare(`
+    // Get all equipped items and sum their bonuses
+    const bonuses = shopDB.prepare(`
         SELECT 
-            COALESCE(SUM(damage_bonus), 0) as damage,
-            COALESCE(SUM(health_bonus), 0) as health,
-            COALESCE(SUM(crit_chance_bonus), 0) as critChance,
-            COALESCE(SUM(crit_damage_bonus), 0) as critDamage
+            SUM(damage_bonus) as damage,
+            SUM(health_bonus) as health,
+            SUM(crit_chance_bonus) as critChance,
+            SUM(crit_damage_bonus) as critDamage,
+            SUM(bolt_bonus) as boltBonus
         FROM shop_items si 
         JOIN user_inventory ui ON si.item_id = ui.item_id 
         WHERE ui.user_id = ? AND ui.is_equipped = 1
     `).get(userId);
-}
 
+    return {
+        damage: bonuses.damage || 0,
+        health: bonuses.health || 0,
+        critChance: (bonuses.critChance || 0) / 100, // Convert percentage to decimal
+        critDamage: bonuses.critDamage || 0,
+        boltBonus: bonuses.boltBonus || 0
+    };
+}
 function getEquipmentInfo(userId) {
     return shopDB.prepare(`
         SELECT si.name, si.category
@@ -4926,16 +5340,13 @@ function getEquipmentInfo(userId) {
         WHERE ui.user_id = ? AND ui.is_equipped = 1
     `).all(userId);
 }
-
 function formatEquipmentText(equipment) {
     return equipment.length ? equipment.map(item => `${item.name} (${item.category})`).join(", ") : "No equipment";
 }
-
 function getRandomGif(weaponType) {
     const gifs = WEAPON_GIFS[weaponType] || WEAPON_GIFS.default;
     return gifs[Math.floor(Math.random() * gifs.length)];
 }
-
 // Battle System
 class DeathBattle {
     constructor(interaction, fighter1, fighter2) {
@@ -4945,19 +5356,29 @@ class DeathBattle {
         this.turn = Math.random() < 0.5 ? 1 : 2;
         this.battleLog = [];
         this.battleEmbed = null;
-
     }
 
     initializeFighter(user) {
         const bonuses = calculatePlayerBonuses(user.id);
+        const member = this.interaction.guild.members.cache.get(user.id);
         return {
             id: user.id,
-            name: user.username,
+            name: member?.displayName || user.username, // Use guild nickname if available
             hp: BASE_HP + bonuses.health,
             maxHp: BASE_HP + bonuses.health,
             bonuses,
             equipment: getEquipmentInfo(user.id)
         };
+    }
+
+    calculateDamage(bonuses) {
+        let damage = Math.floor(Math.random() * 6) + 5 + bonuses.damage; // Damage stacks
+        const isCrit = Math.random() < ((bonuses.critChance || 0) / 100); // Convert percentage to probability
+
+        if (isCrit) {
+            damage *= 1.5 * (1 + (bonuses.critDamage || 0) / 100); // Convert percentage to multiplier
+        }
+        return { damage: Math.floor(damage), isCrit };
     }
 
     createBattleEmbed() {
@@ -4987,7 +5408,8 @@ class DeathBattle {
         const createFighterStatus = (fighter) => {
             return [
                 `**${fighter.name}** (${Math.max(fighter.hp, 0)}/${fighter.maxHp} HP)`,
-                `DMG+${fighter.bonuses.damage} | CRIT: ${(fighter.bonuses.critChance*100).toFixed(1)}%`,
+                // Convert decimal to percentage
+                `DMG+${fighter.bonuses.damage} | CRIT: ${(fighter.bonuses.critChance * 100).toFixed(2)}%`,
                 `Equipment: ${formatEquipmentText(fighter.equipment)}`
             ].join('\n');
         };
@@ -5002,58 +5424,73 @@ class DeathBattle {
     async processTurn() {
         const attacker = this.turn === 1 ? this.fighter1 : this.fighter2;
         const defender = this.turn === 1 ? this.fighter2 : this.fighter1;
-        
-        const weapon = getEquippedWeapon(attacker.equipment);
-        const { damage, isCrit } = this.calculateDamage(attacker.bonuses);
-        
-        defender.hp -= damage;
-        
-        this.battleLog.push(this.createAttackLog(attacker, defender, weapon, damage, isCrit));
-        
-        await this.updateBattleEmbed(getRandomGif(weapon.type));
+
+        const weapon = getEquippedWeapon(attacker.equipment) || { type: "unarmed", name: "fists" }; // Default if no weapon
+        const { damage = 0, isCrit = false } = this.calculateDamage(attacker.bonuses) || { damage: 0, isCrit: false };
+
+        defender.hp = Math.max(0, defender.hp - damage); // Prevent negative HP
+
+        // 10% chance to reveal a clue during battle
+        if (Math.random() < 0.05) {
+            const clues = [
+                "As weapons clash, a whisper echoes: 'The clock reveals its secrets'",
+                "A strange energy pulses through the arena, revealing ancient words",
+                "Time seems to slow as mysterious words form in the air",
+                "The battle stirs something ancient, revealing hidden knowledge"
+            ];
+
+            const clue = clues[Math.floor(Math.random() * clues.length)];
+            this.battleLog.push(`🔍 **${clue}**`);
+        } else {
+            this.battleLog.push(this.createAttackLog(attacker, defender, weapon, damage, isCrit));
+        }
+
+        await this.updateBattleEmbed(getRandomGif(weapon.type || "unarmed"));
         this.turn = this.turn === 1 ? 2 : 1;
     }
 
-    calculateDamage(bonuses) {
-        let damage = Math.floor(Math.random() * 6) + 5 + bonuses.damage;
-        const isCrit = Math.random() < (bonuses.critChance || 0);
-        
-        if (isCrit) {
-            damage *= 1.5 + (bonuses.critDamage || 0);
-        }
-        
-        return { damage: Math.floor(damage), isCrit };
-    }
-
     createAttackLog(attacker, defender, weapon, damage, isCrit) {
+        const equippedWeapons = attacker.equipment.filter(item =>
+            item.category.toLowerCase() === 'weapon' && item.name
+        );
+
+        let selectedWeapon;
+        if (equippedWeapons.length > 0) {
+            selectedWeapon = equippedWeapons[Math.floor(Math.random() * equippedWeapons.length)].name;
+        } else {
+            selectedWeapon = "fist";
+        }
+
         return isCrit
-            ? `💥 **${attacker.name}** lands a critical hit with their **${weapon.name}** on **${defender.name}** for **${damage}** damage!`
-            : `⚔️ **${attacker.name}** attacks with their **${weapon.name}** dealing **${damage}** damage to **${defender.name}**!`;
+            ? `💥 **${attacker.name}** lands a critical hit with their **${selectedWeapon}** on **${defender.name}** for **${damage}** damage!`
+            : `⚔️ **${attacker.name}** attacks with their **${selectedWeapon}** dealing **${damage}** damage to **${defender.name}**!`;
     }
 
     async updateBattleEmbed(gifUrl) {
         this.battleEmbed
             .setFields(this.getBattleFields())
             .setImage(gifUrl);
-        
-        await this.interaction.editReply({ embeds: [this.battleEmbed] });
+
+        // Use message.edit instead of editReply
+        await this.interaction.message.edit({ embeds: [this.battleEmbed] });
     }
 
     async handleBattleEnd() {
         const winner = this.fighter1.hp > 0 ? this.fighter1 : this.fighter2;
         const loser = this.fighter1.hp > 0 ? this.fighter2 : this.fighter1;
-        
+
         const rewards = this.calculateRewards();
         await this.distributeRewards(winner.id, loser.id, rewards);
-        
+
         this.battleEmbed
             .setTitle("⚔️ **DEATH BATTLE FINISHED!** ⚔️")
             .setDescription(this.createVictoryDescription(winner, loser, rewards))
             .setColor("#50C878")
             .setFooter({ text: "Battle Complete!" })
             .setImage("https://media1.tenor.com/m/KFpjUU9RL34AAAAd/rivet-dance.gif");
-        
-        await this.interaction.editReply({ embeds: [this.battleEmbed] });
+
+        // Use message.edit instead of editReply
+        await this.interaction.message.edit({ embeds: [this.battleEmbed] });
     }
 
     calculateRewards() {
@@ -5070,7 +5507,7 @@ class DeathBattle {
             SET balance = balance + ? 
             WHERE user_id = ?
         `);
-        
+
         await Promise.all([
             stmt.run(rewards.winner, winnerId),
             stmt.run(rewards.loser, loserId),
@@ -5109,196 +5546,305 @@ class DeathBattle {
 
     async start() {
         this.battleEmbed = this.createBattleEmbed();
-        await this.interaction.reply({ embeds: [this.battleEmbed] });
-        
+
+        // Since the interaction has already been updated with "Battle starting...",
+        // use message.edit instead of reply
+        await this.interaction.message.edit({ embeds: [this.battleEmbed] });
+
         while (this.fighter1.hp > 0 && this.fighter2.hp > 0) {
             await this.processTurn();
             await new Promise(resolve => setTimeout(resolve, BATTLE_DELAY));
         }
-        
+
         await this.handleBattleEnd();
     }
 }
-
 // Command handler
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-deathbattle") return;
 
-    const fighter1 = interaction.options.getUser("fighter1");
-    const fighter2 = interaction.options.getUser("fighter2");
+    const challenger = interaction.user;
+    const target = interaction.options.getUser("opponent");
 
-    if (fighter1.id === fighter2.id) {
-        return interaction.reply({ content: "❌ You cannot fight yourself!", flags: 64 });
-    }
-
-    try {
-        const battle = new DeathBattle(interaction, fighter1, fighter2);
-        await battle.start();
-    } catch (error) {
-        console.error("Battle error:", error);
-        await interaction.reply({ 
-            content: "❌ An error occurred during the battle!", 
-            flags: 64 
+    if (!target) {
+        return interaction.reply({
+            content: "❌ Please specify an opponent!",
+            flags: 64
         });
     }
-});
 
+    if (challenger.id === target.id) {
+        return interaction.reply({
+            content: "❌ You cannot challenge yourself!",
+            flags: 64
+        });
+    }
+
+    if (target.bot) {
+        return interaction.reply({
+            content: "❌ You cannot challenge bots!",
+            flags: 64
+        });
+    }
+
+    // Create accept/decline buttons
+    const row = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId(`accept_battle_${challenger.id}_${target.id}`)
+                .setLabel('Accept Battle')
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`decline_battle_${challenger.id}_${target.id}`)
+                .setLabel('Decline Battle')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+    const challengeEmbed = new EmbedBuilder()
+        .setColor("#ff0000")
+        .setTitle("⚔️ Death Battle Challenge!")
+        .setDescription(`${challenger} has challenged ${target} to a death battle!\nWaiting for response...`)
+        .setFooter({ text: "This challenge will expire in 60 seconds" });
+
+    // Add a content field with the ping
+    const response = await interaction.reply({
+        content: `${target}`, // This will ping the opponent
+        embeds: [challengeEmbed],
+        components: [row]
+    });
+
+    // Create collector for the buttons
+    const filter = i => i.user.id === target.id;
+    const collector = response.createMessageComponentCollector({
+        filter,
+        time: 60000
+    });
+
+    // Add collector end event to handle expired challenges
+    collector.on('end', collected => {
+        if (collected.size === 0) {
+            interaction.editReply({
+                content: `${target} did not respond to the challenge.`,
+                embeds: [],
+                components: [],
+                flags: 64
+            });
+        }
+    });
+
+    collector.on('collect', async i => {
+        if (i.customId === `accept_battle_${challenger.id}_${target.id}`) {
+            try {
+                await i.update({
+                    content: "⚔️ Battle starting...",
+                    embeds: [],
+                    components: []
+                });
+
+                const battle = new DeathBattle(i, challenger, target);
+                await battle.start();
+            } catch (error) {
+                console.error("Battle error:", error);
+                await interaction.editReply({
+                    content: "❌ An error occurred during the battle!",
+                    embeds: [],
+                    components: [],
+                    flags: 64
+                });
+            }
+        } else if (i.customId === `decline_battle_${challenger.id}_${target.id}`) {
+            await i.update({
+                content: `${target} declined the battle challenge.`,
+                embeds: [],
+                components: [],
+                flags: 64
+            });
+        }
+    });
+});
 // 8ball Command
 const responses = [
-    "Yes! ✅", "No. ❌", "Maybe... 🤔", "Absolutely!", 
+    "Yes! ✅", "No. ❌", "Maybe... 🤔", "Absolutely!",
     "Not likely.", "Ask again later. ⏳", "Definitely!", "I wouldn't count on it."
 ];
-
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === "tgc-8ball") {
         const question = interaction.options.getString("question");
-        if (!question) return interaction.reply({ content: "❓ You must ask a question!", flags: 64 });
+        if (!question) {
+            return interaction.reply({
+                content: "❓ You must ask a question!",
+                flags: 64
+            });
+        }
 
         const response = responses[Math.floor(Math.random() * responses.length)];
-        await interaction.reply({ content: `🎱 **Question:** ${question}\n🔮 **Answer:** ${response}`});
+
+        const embed = new EmbedBuilder()
+            .setTitle("🎱 Magic 8-Ball")
+            .addFields(
+                { name: "❓ Question", value: question },
+                { name: "🔮 Answer", value: response }
+            )
+            .setColor("#2b2d31")
+            .setAuthor({
+                name: interaction.user.username,
+                iconURL: interaction.user.displayAvatarURL()
+            })
+            .setFooter({
+                text: "The Magic 8-Ball has spoken!"
+            })
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
     }
 });
 
-// Random Quote Command
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand()) return;
+// ====================================
+//            Shop System
+// ====================================
+// Helper functions
+function formatItemList(items) {
+    return items.map(item => {
+        const bonuses = formatBonuses(item);
+        const eventInfo = item.event_name ? `\n🎉 Event: ${item.event_name}` : '';
+        return `**${item.name}** (${item.price.toLocaleString()} ${CURRENCY_NAME})${eventInfo}\n${bonuses}`;
+    }).join('\n\n');
+}
+function formatBonuses(itemOrBonuses) {
+    const bonuses = [];
 
-    if (interaction.commandName === "tgc-randomquote") {
-        // Fetch a random quote from the database
-        const quote = db.prepare("SELECT text FROM quotes ORDER BY RANDOM() LIMIT 1").get();
+    // Handle total bonuses object
+    if (itemOrBonuses.damage) bonuses.push(`⚔️ +${itemOrBonuses.damage.toLocaleString()} Damage`);
+    if (itemOrBonuses.health) bonuses.push(`❤️ +${itemOrBonuses.health.toLocaleString()} Health`);
+    if (itemOrBonuses.critChance) bonuses.push(`🎯 +${itemOrBonuses.critChance.toLocaleString()}% Crit Chance`);
+    if (itemOrBonuses.critDamage) bonuses.push(`💥 +${itemOrBonuses.critDamage.toLocaleString()}% Crit Damage`);
+    if (itemOrBonuses.boltBonus) bonuses.push(`🔧 +${(itemOrBonuses.boltBonus * 100).toLocaleString()}% Bolt Gains`);
 
-        if (!quote) {
-            return interaction.reply({ content: "❌ No quotes found! Use `/tgc-addquote` to add one.", flags: 64 });
+    // Handle individual item bonuses
+    if (itemOrBonuses.damage_bonus) bonuses.push(`⚔️ +${itemOrBonuses.damage_bonus.toLocaleString()} Damage`);
+    if (itemOrBonuses.health_bonus) bonuses.push(`❤️ +${itemOrBonuses.health_bonus.toLocaleString()} Health`);
+    if (itemOrBonuses.crit_chance_bonus) bonuses.push(`🎯 +${itemOrBonuses.crit_chance_bonus.toLocaleString()}% Crit Chance`);
+    if (itemOrBonuses.crit_damage_bonus) bonuses.push(`💥 +${itemOrBonuses.crit_damage_bonus.toLocaleString()}% Crit Damage`);
+    if (itemOrBonuses.bolt_bonus) bonuses.push(`🔧 +${(itemOrBonuses.bolt_bonus * 100).toLocaleString()}% Bolt Gains`);
+
+    return bonuses.length > 0 ? bonuses.join('\n') : 'No bonuses';
+}
+function calculateCategoryBonuses(items) {
+    return items.reduce((acc, item) => {
+        if (item.damage_bonus) acc.damage = (acc.damage || 0) + Number(item.damage_bonus);
+        if (item.health_bonus) acc.health = (acc.health || 0) + Number(item.health_bonus);
+        if (item.crit_chance_bonus) acc.critChance = (acc.critChance || 0) + Number(item.crit_chance_bonus);
+        if (item.crit_damage_bonus) acc.critDamage = (acc.critDamage || 0) + Number(item.crit_damage_bonus);
+        if (item.bolt_bonus) acc.boltBonus = (acc.boltBonus || 0) + Number(item.bolt_bonus);
+        return acc;
+    }, {});
+}
+function getCategoryEmoji(category) {
+    const categoryEmojis = {
+        'Weapon': '⚔️',
+        'Armor': '🛡️',
+        'Vehicle': '🚗',
+        'Gadget': '🔧',
+        'Consumable': '🍖',
+        'Accessory': '📿',
+        'Pet': '🐾',
+        'Mount': '🐎',
+        'Material': '📦',
+        'Quest': '📜',
+        'Event': '🎉',
+        'Special': '✨',
+        'Collectable': '🏆',
+        'Utility': '🛠️',
+        'Cosmetic': '👕',
+        'default': '📦'
+    };
+
+    // Case-insensitive category matching
+    const normalizedCategory = category.toLowerCase();
+    for (const [key, emoji] of Object.entries(categoryEmojis)) {
+        if (key.toLowerCase() === normalizedCategory) {
+            return emoji;
         }
-
-        await interaction.reply({ content: `📜 **Random Quote:** ${quote.text}`});
-    }
-});
-
-// Add Quote Command
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-
-    if (interaction.commandName === "tgc-addquote") {
-
-        // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
-    }
-        // Create the modal
-        const modal = new ModalBuilder()
-            .setCustomId("addquote_modal")
-            .setTitle("Add a New Quote");
-
-        // Create a text input field
-        const quoteInput = new TextInputBuilder()
-            .setCustomId("quote_content")
-            .setLabel("Enter the quote")
-            .setStyle(TextInputStyle.Paragraph) // Multi-line input
-            .setPlaceholder("Type the quote here...")
-            .setRequired(true);
-
-        // Add input to a row and then to the modal
-        const row = new ActionRowBuilder().addComponents(quoteInput);
-        modal.addComponents(row);
-
-        // Show the modal
-        await interaction.showModal(modal);
-    }
-});
-
-// Handle quote submission from the modal
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isModalSubmit()) return;
-
-    if (interaction.customId === "addquote_modal") {
-        const quoteText = interaction.fields.getTextInputValue("quote_content");
-
-        // Insert into database
-        db.prepare("INSERT INTO quotes (text) VALUES (?)").run(quoteText);
-
-        // Confirm success
-        await interaction.reply({ content: `✅ Quote added: "${quoteText}"`, flags: 64 });
-    }
-});
-
-// List Quotes Command
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-
-    if (interaction.commandName === "tgc-listquotes") {
-        const quotes = db.prepare("SELECT id, text FROM quotes").all();
-
-        if (quotes.length === 0) {
-            return interaction.reply({ content: "❌ No quotes found!", flags: 64 });
-        }
-
-        const quoteList = quotes.map(q => `**#${q.id}:** ${q.text}`).join("\n");
-
-        await interaction.reply({ content: `📜 **Stored Quotes:**\n${quoteList}`});
-    }
-});
-
-// Delete Quote Command
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-
-    if (interaction.commandName === "tgc-deletequote") {
-        const quoteId = interaction.options.getInteger("id");
-
-        // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
     }
 
-        const deleted = db.prepare("DELETE FROM quotes WHERE id = ?").run(quoteId);
-
-        if (deleted.changes === 0) {
-            return interaction.reply({ content: `❌ No quote found with ID **${quoteId}**!`, flag: 64 });
-        }
-
-        await interaction.reply({ content: `✅ Deleted quote **#${quoteId}**!`});
-    }
-});
-
-// ============
-// Shop System
-// ============
-
+    return categoryEmojis.default;
+}
+// Currency Configuration
 const CURRENCY_NAME = "Bolts"; // Change this to whatever you want
 const CURRENCY_EMOJI = "⚙️"; // Optional emoji
-
 // Balance Command
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === "tgc-balance") {
-        const userId = interaction.user.id;
+        // Get target user (either mentioned user or command user)
+        const targetUser = interaction.options.getUser("user") || interaction.user;
+        const userId = targetUser.id;
 
-        //  Fetch balance from `shopDB`
-        let userData = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?").get(userId);
-        if (!userData) {
-            shopDB.prepare("INSERT INTO user_currency (user_id, balance) VALUES (?, ?)").run(userId, 0);
-            userData = { balance: 0 };
+        try {
+            // Fetch balance from shopDB
+            let userData = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?").get(userId);
+
+            // Initialize new user or fix negative balance
+            if (!userData || userData.balance < 0) {
+                // If user doesn't exist or has negative balance, set to 0
+                shopDB.prepare(`
+                    INSERT INTO user_currency (user_id, balance) 
+                    VALUES (?, 0) 
+                    ON CONFLICT(user_id) DO UPDATE SET balance = 
+                        CASE 
+                            WHEN balance < 0 THEN 0 
+                            ELSE balance 
+                        END
+                `).run(userId);
+
+                userData = { balance: 0 };
+            }
+
+            // Parse balance as integer and ensure it's not negative
+            const userBalance = Math.max(0, parseInt(userData.balance, 10) || 0);
+
+            // Format the balance with commas
+            const formattedBalance = userBalance.toLocaleString();
+
+            // Create embed for better presentation
+            const balanceEmbed = new EmbedBuilder()
+                .setColor('#FFD700')
+                .setTitle(`${CURRENCY_EMOJI} Balance Check`)
+                .setDescription([
+                    `**Username:** ${targetUser.username}`,
+                    `**Balance:** ${formattedBalance} ${CURRENCY_NAME}`,
+                    '',
+                    `*Use \`/tgc-shop\` to spend your ${CURRENCY_NAME}!*`
+                ].join('\n'))
+                .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+                .setTimestamp();
+
+            return interaction.reply({
+                embeds: [balanceEmbed],
+                flags: 64
+            });
+
+        } catch (error) {
+            console.error("Error in balance command:", error);
+
+            // Log detailed error information
+            console.log({
+                userId: userId,
+                username: targetUser.username,
+                errorMessage: error.message,
+                errorStack: error.stack
+            });
+
+            return interaction.reply({
+                content: "❌ An error occurred while checking the balance. Please try again later.",
+                flags: 64
+            });
         }
-
-        const userBalance = parseInt(userData.balance, 10); //  Ensure balance is an integer
-
-        return interaction.reply({ 
-            content: `💰 **${interaction.user.username}**, you have **${userBalance} ${CURRENCY_NAME} ${CURRENCY_EMOJI}**.`,
-            flags: 64 
-        });
     }
 });
-
 // Earn Command
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -5342,14 +5888,13 @@ client.on("interactionCreate", async interaction => {
         });
     }
 });
-
 // Shop Command
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === "tgc-shop") {
         const now = Date.now();
-        
+
         // Get active events - modified query to only check end_date and active status
         const activeEvents = shopDB.prepare(`
             SELECT name FROM events 
@@ -5372,9 +5917,9 @@ client.on("interactionCreate", async interaction => {
         `).all(now);
 
         if (regularCategories.length === 0 && eventCategories.length === 0) {
-            return interaction.reply({ 
-                content: "❌ The shop is currently empty!", 
-                flags: 64 
+            return interaction.reply({
+                content: "❌ The shop is currently empty!",
+                flags: 64
             });
         }
 
@@ -5421,7 +5966,7 @@ client.on("interactionCreate", async interaction => {
                 const eventData = shopDB.prepare(`
                     SELECT end_date FROM events WHERE name = ?
                 `).get(event.name);
-                
+
                 const timeLeft = Math.ceil((eventData.end_date - now) / (1000 * 60 * 60 * 24));
                 return `🎉 **${event.name}** (${timeLeft} days remaining)`;
             }).join('\n');
@@ -5439,7 +5984,6 @@ client.on("interactionCreate", async interaction => {
         });
     }
 });
-
 // Shop category selection
 client.on("interactionCreate", async interaction => {
     if (!interaction.isStringSelectMenu() || interaction.customId !== "shop_category") return;
@@ -5471,9 +6015,9 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (!items || items.length === 0) {
-        return interaction.reply({ 
-            content: "❌ No items found in this category.", 
-            flags: 64 
+        return interaction.reply({
+            content: "❌ No items found in this category.",
+            flags: 64
         });
     }
 
@@ -5482,8 +6026,8 @@ client.on("interactionCreate", async interaction => {
         label: `${item.name} (${item.price} ${CURRENCY_NAME})`,
         value: item.item_id.toString(),
         description: item.description.substring(0, 100), // Truncate long descriptions
-        emoji: item.category.toLowerCase().includes('weapon') ? "⚔️" : 
-               item.category.toLowerCase().includes('vehicle') ? "🚗" : "🛍️"
+        emoji: item.category.toLowerCase().includes('weapon') ? "⚔️" :
+            item.category.toLowerCase().includes('vehicle') ? "🚗" : "🛍️"
     }));
 
     const itemMenu = new StringSelectMenuBuilder()
@@ -5498,8 +6042,8 @@ client.on("interactionCreate", async interaction => {
         .setTitle(`${category} Shop`)
         .setColor(
             category.toLowerCase().includes('weapon') ? "#FF0000" :
-            category.toLowerCase().includes('vehicle') ? "#0000FF" :
-            "#FFD700"
+                category.toLowerCase().includes('vehicle') ? "#0000FF" :
+                    "#FFD700"
         );
 
     // Add category-specific fields
@@ -5520,13 +6064,12 @@ client.on("interactionCreate", async interaction => {
         components: [actionRow]
     });
 });
-
 // Handle item selection
 client.on("interactionCreate", async interaction => {
     if (!interaction.isStringSelectMenu() || interaction.customId !== "shop_items") return;
-    
+
     const itemId = parseInt(interaction.values[0]);
-    
+
     // Get item with detailed information
     const item = shopDB.prepare(`
         SELECT i.*, e.name as event_name, e.end_date as event_end
@@ -5536,11 +6079,14 @@ client.on("interactionCreate", async interaction => {
     `).get(itemId);
 
     if (!item) {
-        return interaction.reply({ 
-            content: "❌ This item no longer exists.", 
-            flags: 64 
+        return interaction.reply({
+            content: "❌ This item no longer exists.",
+            flags: 64
         });
     }
+
+    // Format the price with commas for better readability
+    const formattedPrice = parseInt(item.price).toLocaleString();
 
     // Build item details based on category
     const details = [];
@@ -5550,22 +6096,34 @@ client.on("interactionCreate", async interaction => {
     if (item.crit_damage_bonus) details.push(`💥 Crit Damage: +${item.crit_damage_bonus}%`);
     if (item.bolt_bonus) details.push(`🔧 Bolt Bonus: +${(item.bolt_bonus * 100).toFixed(0)}%`);
 
+    // Add event information if applicable
+    if (item.event_name) {
+        const eventEndDate = new Date(item.event_end);
+        const now = new Date();
+
+        if (eventEndDate > now) {
+            const timeRemaining = Math.floor((eventEndDate - now) / (1000 * 60 * 60 * 24)); // days
+            details.push(`🎉 **Event Item:** ${item.event_name}`);
+            details.push(`⏳ Available for: ${timeRemaining} more days`);
+        }
+    }
+
     const embed = new EmbedBuilder()
-        .setTitle(`${item.category.toLowerCase().includes('weapon') ? "⚔️" : 
-                   item.category.toLowerCase().includes('vehicle') ? "🚗" : "🛍️"} ${item.name}`)
+        .setTitle(`${item.category.toLowerCase().includes('weapon') ? "⚔️" :
+            item.category.toLowerCase().includes('vehicle') ? "🚗" : "🛍️"} ${item.name}`)
         .setDescription([
             item.description,
             "",
             details.length > 0 ? "**Item Stats:**" : "",
             ...details,
             "",
-            `💰 **Price:** ${item.price} ${CURRENCY_NAME} ${CURRENCY_EMOJI}`
+            `💰 **Price:** ${formattedPrice} ${CURRENCY_NAME} ${CURRENCY_EMOJI}`
         ].filter(line => line !== "").join('\n'))
         .setImage(item.image_url || null)
         .setColor(
             item.category.toLowerCase().includes('weapon') ? "#FF0000" :
-            item.category.toLowerCase().includes('vehicle') ? "#0000FF" :
-            "#FFD700"
+                item.category.toLowerCase().includes('vehicle') ? "#0000FF" :
+                    "#FFD700"
         );
 
     const button = new ButtonBuilder()
@@ -5580,7 +6138,6 @@ client.on("interactionCreate", async interaction => {
         components: [actionRow]
     });
 });
-
 // Handle Purchase Confirmation
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isButton() || !interaction.customId?.startsWith("shop_confirm_purchase_")) return;
@@ -5714,16 +6271,210 @@ client.on("interactionCreate", async (interaction) => {
         });
     }
 });
+// Sell Command autocomplete handler
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isAutocomplete() || interaction.commandName !== 'tgc-sell') return;
 
+    const focusedValue = interaction.options.getFocused().toLowerCase();
+    const userId = interaction.user.id;
+
+    try {
+        const items = shopDB.prepare(`
+            SELECT si.name, si.price, ui.is_equipped
+            FROM user_inventory ui
+            JOIN shop_items si ON ui.item_id = si.item_id
+            WHERE ui.user_id = ? 
+            AND LOWER(si.name) LIKE ?
+            ORDER BY si.name
+            LIMIT 25
+        `).all(userId, `%${focusedValue}%`);
+
+        const choices = items.map(item => ({
+            name: `${item.name} (${item.price} bolts) ${item.is_equipped ? '✅' : ''}`,
+            value: item.name
+        }));
+
+        await interaction.respond(choices);
+    } catch (error) {
+        console.error('Error in sell autocomplete:', error);
+        await interaction.respond([]);
+    }
+});
+// Sell Command Handler
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== 'tgc-sell') return;
+
+    const itemName = interaction.options.getString('item');
+    const userId = interaction.user.id;
+
+    try {
+        // Get item details
+        const item = shopDB.prepare(`
+            SELECT si.*, ui.is_equipped 
+            FROM shop_items si 
+            JOIN user_inventory ui ON si.item_id = ui.item_id 
+            WHERE ui.user_id = ? AND LOWER(si.name) = LOWER(?)
+        `).get(userId, itemName);
+
+        if (!item) {
+            return interaction.reply({
+                content: `❌ You don't own an item called "${itemName}"`,
+                flags: 64
+            });
+        }
+
+        if (item.is_equipped) {
+            return interaction.reply({
+                content: `❌ Please unequip **${item.name}** before selling it.`,
+                flags: 64
+            });
+        }
+
+        // Calculate sell price (50% of original price)
+        const sellPrice = Math.floor(item.price * 0.5);
+
+        // Create confirmation embed
+        const confirmEmbed = new EmbedBuilder()
+            .setTitle("🏷️ Confirm Sale")
+            .setDescription([
+                `Are you sure you want to sell **${item.name}**?`,
+                "",
+                `💰 You will receive: **${sellPrice}** ${CURRENCY_NAME}`,
+                `⚠️ This action cannot be undone!`
+            ].join('\n'))
+            .setColor("#FFA500");
+
+        // Create confirm/cancel buttons
+        const buttons = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`confirm_sell_${item.item_id}`)
+                    .setLabel('Confirm Sale')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId('cancel_sell')
+                    .setLabel('Cancel')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+        await interaction.reply({
+            embeds: [confirmEmbed],
+            components: [buttons],
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('Error in sell command:', error);
+        await interaction.reply({
+            content: '❌ An error occurred while processing your request.',
+            flags: 64
+        });
+    }
+});
+// Sell Command Confirm/Cancel Button Handler
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton()) return;
+
+    if (interaction.customId === 'cancel_sell') {
+        await interaction.update({
+            content: '❌ Sale cancelled.',
+            embeds: [],
+            components: [],
+            flags: 64
+        });
+    }
+
+    if (interaction.customId.startsWith('confirm_sell_')) {
+        const itemId = interaction.customId.split('_')[2];
+        const userId = interaction.user.id;
+
+        try {
+            // Get item details
+            const item = shopDB.prepare(`
+                SELECT si.*, ui.is_equipped 
+                FROM shop_items si 
+                JOIN user_inventory ui ON si.item_id = ui.item_id 
+                WHERE ui.user_id = ? AND si.item_id = ?
+            `).get(userId, itemId);
+
+            if (!item) {
+                return interaction.update({
+                    content: '❌ Item not found or already sold.',
+                    embeds: [],
+                    components: [],
+                    flags: 64
+                });
+            }
+
+            if (item.is_equipped) {
+                return interaction.update({
+                    content: '❌ Please unequip the item before selling.',
+                    embeds: [],
+                    components: [],
+                    flags: 64
+                });
+            }
+
+            const sellPrice = Math.floor(item.price * 0.5);
+
+            // Start transaction
+            const transaction = shopDB.transaction(() => {
+                // Remove item from inventory
+                shopDB.prepare(`
+                    DELETE FROM user_inventory 
+                    WHERE user_id = ? AND item_id = ?
+                `).run(userId, itemId);
+
+                // Add currency to user's balance
+                shopDB.prepare(`
+                    UPDATE user_currency 
+                    SET balance = balance + ? 
+                    WHERE user_id = ?
+                `).run(sellPrice, userId);
+            });
+
+            transaction();
+
+            // Get new balance
+            const newBalance = shopDB.prepare(`
+                SELECT balance FROM user_currency WHERE user_id = ?
+            `).get(userId).balance;
+
+            const successEmbed = new EmbedBuilder()
+                .setTitle("✅ Item Sold!")
+                .setDescription([
+                    `Successfully sold **${item.name}** for **${sellPrice}** ${CURRENCY_NAME}`,
+                    "",
+                    `💰 New Balance: **${newBalance}** ${CURRENCY_NAME}`
+                ].join('\n'))
+                .setColor("#00FF00");
+
+            await interaction.update({
+                embeds: [successEmbed],
+                components: [],
+                flags: 64
+            });
+
+        } catch (error) {
+            console.error('Error processing sale:', error);
+            await interaction.update({
+                content: '❌ An error occurred while processing the sale.',
+                embeds: [],
+                components: [],
+                flags: 64
+            });
+        }
+    }
+});
 // additem Command
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-additem") return;
 
     // Admin permission check
     if (!checkCommandPermission(interaction)) {
-        return interaction.reply({ 
-            content: "❌ You don't have permission to add items.", 
-            flags: 64 
+        return interaction.reply({
+            content: "❌ You don't have permission to add items.",
+            flags: 64
         });
     }
 
@@ -5823,10 +6574,10 @@ client.on("interactionCreate", async interaction => {
             basicInfo.push(`🎉 Event: **None**`);
         }
 
-        embed.addFields({ 
-            name: "Basic Info", 
+        embed.addFields({
+            name: "Basic Info",
             value: basicInfo.join('\n'),
-            inline: false 
+            inline: false
         });
 
         // Add bonus stats if any exist
@@ -5838,10 +6589,10 @@ client.on("interactionCreate", async interaction => {
         if (itemData.boltBonus) bonuses.push(`🔧 +${(itemData.boltBonus * 100).toFixed(0)}% Bolt Gains`);
 
         if (bonuses.length > 0) {
-            embed.addFields({ 
-                name: "Item Bonuses", 
+            embed.addFields({
+                name: "Item Bonuses",
                 value: bonuses.join('\n'),
-                inline: false 
+                inline: false
             });
         }
 
@@ -5857,20 +6608,19 @@ client.on("interactionCreate", async interaction => {
             inline: false
         });
 
-        return interaction.reply({ 
-            embeds: [embed], 
-            flags: 64 
+        return interaction.reply({
+            embeds: [embed],
+            flags: 64
         });
 
     } catch (error) {
         console.error("Error adding item:", error);
-        return interaction.reply({ 
-            content: "❌ An error occurred while adding the item to the shop.", 
-            flags: 64 
+        return interaction.reply({
+            content: "❌ An error occurred while adding the item to the shop.",
+            flags: 64
         });
     }
 });
-
 // inventory Command
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-inventory") return;
@@ -5878,13 +6628,12 @@ client.on("interactionCreate", async (interaction) => {
     const userId = interaction.user.id;
     const guild = interaction.guild;
 
-    // Fetch the user's server profile picture
+    // Fetch user profile
     const member = await guild.members.fetch(userId).catch(() => null);
-    const profilePicture = member?.avatar
-        ? `https://cdn.discordapp.com/guilds/${guild.id}/users/${userId}/avatars/${member.avatar}.png?size=512`
-        : interaction.user.displayAvatarURL({ dynamic: true });
+    const profilePicture = member?.displayAvatarURL({ dynamic: true, size: 512 }) ||
+        interaction.user.displayAvatarURL({ dynamic: true });
 
-    // Fetch all items with event information
+    // Fetch inventory items
     const items = shopDB.prepare(`
         SELECT si.*, ui.is_equipped, e.name as event_name, e.end_date as event_end
         FROM user_inventory ui 
@@ -5896,301 +6645,456 @@ client.on("interactionCreate", async (interaction) => {
 
     if (!items.length) {
         return interaction.reply({
-            content: "🛒 Your inventory is empty! Purchase items from the shop using `/tgc-shop`.",
+            content: "🛒 Your inventory is empty! Use `/tgc-shop` to purchase items.",
             flags: 64
         });
     }
 
-    // Group items by category
+    // Group and sort items
     const itemsByCategory = items.reduce((acc, item) => {
-        if (!acc[item.category]) {
-            acc[item.category] = [];
-        }
+        if (!acc[item.category]) acc[item.category] = [];
         acc[item.category].push(item);
         return acc;
     }, {});
 
-    // Pagination setup
-    let page = 0;
-    const categoriesArray = Object.keys(itemsByCategory);
-    const totalPages = categoriesArray.length;
+    // Create category buttons
+    const createCategoryButtons = (currentCategory) => {
+        const rows = [];
+        const categories = Object.keys(itemsByCategory);
 
-    function generateEmbed(page) {
-        const currentCategory = categoriesArray[page];
-        const categoryItems = itemsByCategory[currentCategory];
+        // Split categories into rows of 5 buttons each
+        for (let i = 0; i < categories.length; i += 5) {
+            const row = new ActionRowBuilder();
+            const buttonGroup = categories.slice(i, i + 5).map(category =>
+                new ButtonBuilder()
+                    .setCustomId(`inv_${category}`)
+                    .setLabel(category)
+                    .setEmoji(getCategoryEmoji(category))
+                    .setStyle(category === currentCategory ? ButtonStyle.Success : ButtonStyle.Secondary)
+            );
+            row.addComponents(buttonGroup);
+            rows.push(row);
+        }
+
+        return rows;
+    };
+
+    // Create inventory display
+    const createInventoryEmbed = (category) => {
+        const categoryItems = itemsByCategory[category];
+        const equippedItems = categoryItems.filter(item => item.is_equipped);
+        const unequippedItems = categoryItems.filter(item => !item.is_equipped);
 
         const embed = new EmbedBuilder()
             .setColor("#FFD700")
-            .setTitle(`${member?.displayName || interaction.user.username}'s Inventory`)
+            .setTitle(`🎒 ${member?.displayName || interaction.user.username}'s Inventory`)
             .setThumbnail(profilePicture)
-            .setFooter({ text: `Category ${page + 1} of ${totalPages}` });
+            .addFields(
+                {
+                    name: `${getCategoryEmoji(category)} ${category} Items`,
+                    value: `Total Items: ${categoryItems.length} | Equipped: ${equippedItems.length}`,
+                    inline: false
+                }
+            );
 
-        // Add items from current category
-        const itemsList = categoryItems.map(item => {
-            const bonuses = [];
-            if (item.damage_bonus) bonuses.push(`⚔️ +${item.damage_bonus} Damage`);
-            if (item.health_bonus) bonuses.push(`❤️ +${item.health_bonus} Health`);
-            if (item.crit_chance_bonus) bonuses.push(`🎯 +${item.crit_chance_bonus}% Crit Chance`);
-            if (item.crit_damage_bonus) bonuses.push(`💥 +${item.crit_damage_bonus}% Crit Damage`);
-            if (item.bolt_bonus) bonuses.push(`🔧 +${(item.bolt_bonus * 100).toFixed(0)}% Bolt Gains`);
-
-            const isEventItem = item.event_name && item.event_end;
-            const eventStatus = isEventItem 
-                ? (Date.now() <= item.event_end 
-                    ? `🎉 Event Item: **${item.event_name}** (Ends <t:${Math.floor(item.event_end / 1000)}:R>)`
-                    : `🏆 Limited Item: **${item.event_name}**`)
-                : '';
-
-            return [
-                `📦 ${isEventItem ? '✨' : ''} **${item.name}** ${item.is_equipped ? '✅' : ''}`,
-                eventStatus,
-                `💰 Value: **${item.price}** ${CURRENCY_NAME}`,
-                bonuses.length > 0 ? `📊 **Bonuses:**\n${bonuses.join('\n')}` : '',
-                '───────────────'
-            ].filter(line => line !== '').join('\n');
-        }).join('\n');
-
-        embed.setDescription([
-            `🎒 **${currentCategory} Items:**\n`,
-            itemsList,
-            '\n📝 **Legend:**',
-            '✨ Event/Limited Item',
-            '✅ Equipped'
-        ].join('\n'));
-
-        return embed;
-    }
-
-    // If there's only one page, just send the embed
-    if (totalPages === 1) {
-        return interaction.reply({ embeds: [generateEmbed(0)] });
-    }
-
-    // Pagination buttons
-    const prevButton = new ButtonBuilder()
-        .setCustomId("prev_inventory")
-        .setLabel("◀️ Previous")
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(true);
-
-    const nextButton = new ButtonBuilder()
-        .setCustomId("next_inventory")
-        .setLabel("Next ▶️")
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(totalPages === 1);
-
-    const row = new ActionRowBuilder().addComponents(prevButton, nextButton);
-
-    const replyMessage = await interaction.reply({
-        embeds: [generateEmbed(page)],
-        components: [row]
-    });
-
-    // Collector for pagination
-    const collector = replyMessage.createMessageComponentCollector({
-        filter: (i) => i.user.id === interaction.user.id,
-        time: 60000
-    });
-
-    collector.on("collect", async (i) => {
-        if (i.customId === "prev_inventory" && page > 0) {
-            page--;
-        } else if (i.customId === "next_inventory" && page < totalPages - 1) {
-            page++;
+        // Add equipped items section if any
+        if (equippedItems.length > 0) {
+            embed.addFields({
+                name: "✅ Equipped Items",
+                value: formatItemList(equippedItems),
+                inline: false
+            });
         }
 
-        prevButton.setDisabled(page === 0);
-        nextButton.setDisabled(page === totalPages - 1);
+        // Add unequipped items section
+        if (unequippedItems.length > 0) {
+            embed.addFields({
+                name: "📦 Available Items",
+                value: formatItemList(unequippedItems),
+                inline: false
+            });
+        }
 
+        // Add total bonuses from equipped items
+        const totalBonuses = calculateCategoryBonuses(equippedItems);
+        if (Object.values(totalBonuses).some(bonus => bonus > 0)) {  // Only add if there are actual bonuses
+            embed.addFields({
+                name: "📊 Total Category Bonuses",
+                value: formatBonuses(totalBonuses),
+                inline: false
+            });
+        }
+
+
+        return embed;
+    };
+
+    // Initial display
+    const initialCategory = Object.keys(itemsByCategory)[0];
+    const initialEmbed = createInventoryEmbed(initialCategory);
+    const initialButtons = createCategoryButtons(initialCategory);
+
+    const response = await interaction.reply({
+        embeds: [initialEmbed],
+        components: initialButtons
+    });
+
+    const message = await response.fetch();
+
+
+    // Button collector
+    const collector = message.createMessageComponentCollector({
+        filter: i => i.user.id === userId,
+        time: 300000 // 5 minutes
+    });
+
+    collector.on('collect', async i => {
+        const category = i.customId.replace('inv_', '');
         await i.update({
-            embeds: [generateEmbed(page)],
-            components: [row]
+            embeds: [createInventoryEmbed(category)],
+            components: createCategoryButtons(category)
         });
     });
 
-    collector.on("end", async () => {
-        prevButton.setDisabled(true);
-        nextButton.setDisabled(true);
-        await interaction.editReply({ components: [row] });
+    collector.on('end', async () => {
+        await interaction.editReply({
+            components: createCategoryButtons(initialCategory).map(row => {
+                row.components.forEach(button => button.setDisabled(true));
+                return row;
+            })
+        });
     });
 });
 
+// ====================================
+//         User Item Commands
+// ====================================
+// Updated bonus text formatting functions
+function getBonusText(item) {
+    const bonuses = [];
+    if (item.damage_bonus) bonuses.push(`⚔️ +${item.damage_bonus} Damage`);
+    if (item.health_bonus) bonuses.push(`❤️ +${item.health_bonus} Health`);
+    if (item.crit_chance_bonus) bonuses.push(`🎯 +${item.crit_chance_bonus}% Crit Chance`);
+    if (item.crit_damage_bonus) bonuses.push(`💥 +${item.crit_damage_bonus}% Crit Damage`);
+    if (item.bolt_bonus) bonuses.push(`🔧 +${(item.bolt_bonus * 100).toFixed(0)}% Bolt Gains`);
+    return bonuses.length > 0 ? bonuses.join('\n') : 'None';
+}
+function getTotalBonusText(bonuses) {
+    const totalBonuses = [];
+    if (bonuses.damage) totalBonuses.push(`⚔️ +${bonuses.damage} Total Damage`);
+    if (bonuses.health) totalBonuses.push(`❤️ +${bonuses.health} Total Health`);
+    // Convert decimal to percentage
+    if (bonuses.critChance) totalBonuses.push(`🎯 +${(bonuses.critChance * 100).toFixed(2)}% Total Crit Chance`);
+    if (bonuses.critDamage) totalBonuses.push(`💥 +${bonuses.critDamage}% Total Crit Damage`);
+    if (bonuses.boltBonus) totalBonuses.push(`🔧 +${(bonuses.boltBonus * 100).toFixed(0)}% Total Bolt Gains`);
+    return totalBonuses.length > 0 ? totalBonuses.join('\n') : 'No bonuses';
+}
 // equip command handler
-client.on("interactionCreate", async (interaction) => {
-        if (!interaction.isChatInputCommand()) return;
-    
-        if (interaction.commandName === "tgc-equip") {
-            const itemName = interaction.options.getString("item");
-            const userId = interaction.user.id;
-    
-            try {
-                // First, check if the user owns the item
-                const item = shopDB.prepare(`
-                    SELECT si.*, ui.is_equipped 
-                    FROM shop_items si 
-                    JOIN user_inventory ui ON si.item_id = ui.item_id 
-                    WHERE ui.user_id = ? AND LOWER(si.name) = LOWER(?)
-                `).get(userId, itemName);
-    
-                if (!item) {
-                    return interaction.reply({
-                        content: `❌ You don't own an item called "${itemName}"`,
-                        flags: 64
-                    });
-                }
-    
-                // Check if there's already an equipped item in this category
-                if (!item.is_equipped) {
-                    const equippedInCategory = shopDB.prepare(`
-                        SELECT si.name 
-                        FROM shop_items si 
-                        JOIN user_inventory ui ON si.item_id = ui.item_id 
-                        WHERE ui.user_id = ? AND si.category = ? AND ui.is_equipped = 1
-                    `).get(userId, item.category);
-    
-                    if (equippedInCategory) {
-                        return interaction.reply({
-                            content: `❌ You already have "${equippedInCategory.name}" equipped in the ${item.category} category. Please unequip it first.`,
-                            flags: 64
-                        });
-                    }
-                }
-    
-                // Toggle equipped status
-                const newStatus = item.is_equipped ? 0 : 1;
-                shopDB.prepare(`
-                    UPDATE user_inventory 
-                    SET is_equipped = ? 
-                    WHERE user_id = ? AND item_id = ?
-                `).run(newStatus, userId, item.item_id);
-    
-                // Create response embed
-                const embed = new EmbedBuilder()
-                    .setColor(newStatus ? "#00FF00" : "#FF0000")
-                    .setTitle(newStatus ? "🎮 Item Equipped" : "📦 Item Unequipped")
-                    .setDescription(`Successfully ${newStatus ? "equipped" : "unequipped"} **${item.name}**`)
-                    .addFields(
-                        { name: "Category", value: item.category, inline: true },
-                        { name: "Bonuses", value: getBonusText(item), inline: true }
-                    );
-    
-                await interaction.reply({
-                    embeds: [embed],
-                    flags: 64
-                });
-    
-            } catch (error) {
-                console.error("Error in equip command:", error);
-                await interaction.reply({
-                    content: "❌ An error occurred while processing your request.",
+client.on('interactionCreate', async interaction => {
+    if (interaction.isAutocomplete() && interaction.commandName === 'tgc-equip') {
+        const focusedValue = interaction.options.getFocused().toLowerCase();
+        const userId = interaction.user.id;
+
+        try {
+            const items = shopDB.prepare(`
+                SELECT si.name, ui.is_equipped, si.category
+                FROM user_inventory ui
+                JOIN shop_items si ON ui.item_id = si.item_id
+                WHERE ui.user_id = ? 
+                AND LOWER(si.name) LIKE ?
+                ORDER BY si.category, si.name
+                LIMIT 25
+            `).all(userId, `%${focusedValue}%`);
+
+            const choices = items.map(item => ({
+                name: `${item.name} (${item.category}) ${item.is_equipped ? '✅' : ''}`,
+                value: item.name
+            }));
+
+            await interaction.respond(choices);
+        } catch (error) {
+            console.error('Error in equip autocomplete:', error);
+            await interaction.respond([]);
+        }
+        return;
+    }
+
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-equip") return;
+
+    const itemName = interaction.options.getString("item");
+    const userId = interaction.user.id;
+
+    try {
+        const item = shopDB.prepare(`
+            SELECT si.*, ui.is_equipped
+            FROM shop_items si
+            JOIN user_inventory ui ON si.item_id = ui.item_id
+            WHERE ui.user_id = ? AND LOWER(si.name) = LOWER(?)
+        `).get(userId, itemName);
+
+        if (!item) {
+            return interaction.reply({
+                content: `❌ You don't own an item called "${itemName}"`,
+                flags: 64
+            });
+        }
+
+        if (item.category === 'Armor' && !item.is_equipped) {
+            const equippedArmor = shopDB.prepare(`
+                SELECT si.name
+                FROM shop_items si
+                JOIN user_inventory ui ON si.item_id = ui.item_id
+                WHERE ui.user_id = ?
+                AND ui.is_equipped = 1
+                AND si.category = 'Armor'
+                AND si.item_id != ?
+            `).get(userId, item.item_id);
+
+            if (equippedArmor) {
+                return interaction.reply({
+                    content: `❌ You already have **${equippedArmor.name}** equipped. Please unequip it first before equipping another armor item.`,
                     flags: 64
                 });
             }
         }
-});
-    
-// Utility function to format bonus text
-function getBonusText(item) {
-        const bonuses = [];
-        if (item.damage_bonus) bonuses.push(`+${item.damage_bonus} Damage`);
-        if (item.health_bonus) bonuses.push(`+${item.health_bonus} Health`);
-        if (item.crit_chance_bonus) bonuses.push(`+${item.crit_chance_bonus}% Crit Chance`);
-        if (item.crit_damage_bonus) bonuses.push(`+${item.crit_damage_bonus}% Crit Damage`);
-        return bonuses.length > 0 ? bonuses.join('\n') : 'None';
-}
 
+        const newStatus = item.is_equipped ? 0 : 1;
+
+        if (item.category === 'Armor' && newStatus === 1) {
+            shopDB.prepare(`
+                UPDATE user_inventory ui
+                SET is_equipped = 0
+                WHERE ui.user_id = ?
+                AND ui.item_id IN (
+                    SELECT item_id 
+                    FROM shop_items 
+                    WHERE category = 'Armor'
+                )
+            `).run(userId);
+        }
+
+        shopDB.prepare(`
+            UPDATE user_inventory
+            SET is_equipped = ?
+            WHERE user_id = ? AND item_id = ?
+        `).run(newStatus, userId, item.item_id);
+
+        const totalBonuses = calculatePlayerBonuses(userId);
+
+        const equippedItems = shopDB.prepare(`
+            SELECT si.name
+            FROM shop_items si
+            JOIN user_inventory ui ON si.item_id = ui.item_id
+            WHERE ui.user_id = ? AND ui.is_equipped = 1 AND si.category = ?
+        `).all(userId, item.category);
+
+        const embed = new EmbedBuilder()
+            .setColor(newStatus ? "#00FF00" : "#FF0000")
+            .setTitle(newStatus ? "🎮 Item Equipped" : "📦 Item Unequipped")
+            .setDescription(`Successfully ${newStatus ? "equipped" : "unequipped"} **${item.name}**`)
+            .addFields(
+                { name: "Category", value: item.category, inline: true },
+                { name: "Item Bonuses", value: getBonusText(item), inline: true },
+                {
+                    name: "Total Equipped Bonuses",
+                    value: getTotalBonusText(totalBonuses),
+                    inline: false
+                }
+            );
+
+        if (equippedItems.length > 0) {
+            embed.addFields({
+                name: `Currently Equipped ${item.category} Items`,
+                value: equippedItems.map(i => `• ${i.name}`).join('\n'),
+                inline: false
+            });
+        }
+
+        await interaction.reply({
+            embeds: [embed],
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error("Error in equip command:", error);
+        await interaction.reply({
+            content: "❌ An error occurred while processing your request.",
+            flags: 64
+        });
+    }
+});
+// giftbolts Command
+client.on("interactionCreate", async interaction => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-giftbolts") return;
+
+    const sender = interaction.user.id;
+    const recipient = interaction.options.getUser("user");
+    const amount = interaction.options.getInteger("amount");
+
+    // Check if trying to give to self
+    if (sender === recipient.id) {
+        return interaction.reply({
+            content: "❌ You cannot give bolts to yourself!",
+            flags: 64
+        });
+    }
+
+    // Check if recipient is a bot
+    if (recipient.bot) {
+        return interaction.reply({
+            content: "❌ You cannot give bolts to bots!",
+            flags: 64
+        });
+    }
+
+    try {
+        // Get sender's balance
+        const senderBalance = shopDB.prepare(
+            "SELECT balance FROM user_currency WHERE user_id = ?"
+        ).get(sender)?.balance || 0;
+
+        if (senderBalance < amount) {
+            return interaction.reply({
+                content: `❌ You don't have enough bolts! (Need: **${amount.toLocaleString()}**, Have: **${senderBalance.toLocaleString()}**)`,
+                flags: 64
+            });
+        }
+
+        // Start transaction
+        const transaction = shopDB.transaction(() => {
+            // Remove bolts from sender
+            shopDB.prepare(
+                "UPDATE user_currency SET balance = balance - ? WHERE user_id = ?"
+            ).run(amount, sender);
+
+            // Add bolts to recipient
+            shopDB.prepare(`
+                INSERT INTO user_currency (user_id, balance)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?
+            `).run(recipient.id, amount, amount);
+        });
+
+        transaction();
+
+        // Create success embed
+        const embed = new EmbedBuilder()
+            .setTitle("💸 Bolts Transferred!")
+            .setDescription([
+                `Successfully sent **${amount.toLocaleString()}** bolts to **${recipient.username}**!`,
+                "",
+                "**Transaction Details:**",
+                `From: ${interaction.user.username}`,
+                `To: ${recipient.username}`,
+                `Amount: ${amount.toLocaleString()} bolts`
+            ].join("\n"))
+            .setColor("#00FF00")
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
+
+    } catch (error) {
+        console.error("Error in giftbolts command:", error);
+        await interaction.reply({
+            content: "❌ An error occurred while transferring bolts.",
+            flags: 64
+        });
+    }
+});
 // Autocomplete for item names
- client.on('interactionCreate', async interaction => {
-        if (!interaction.isAutocomplete()) return;
-    
-        if (interaction.commandName === 'tgc-giveitem') {
-            const focusedValue = interaction.options.getFocused().toLowerCase();
-            
-            try {
-                // Fetch all items from the shop
-                const items = shopDB.prepare(`
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isAutocomplete()) return;
+
+    if (interaction.commandName === 'tgc-giveitem') {
+        const focusedValue = interaction.options.getFocused().toLowerCase();
+
+        try {
+            // Fetch all items from the shop
+            const items = shopDB.prepare(`
                     SELECT name 
                     FROM shop_items 
                     WHERE LOWER(name) LIKE ?
                     LIMIT 25
                 `).all(`%${focusedValue}%`);
-    
-                const choices = items.map(item => ({
-                    name: item.name,
-                    value: item.name
-                }));
-    
-                await interaction.respond(choices);
-            } catch (error) {
-                console.error('Error in giveitem autocomplete:', error);
-                await interaction.respond([]);
-            }
+
+            const choices = items.map(item => ({
+                name: item.name,
+                value: item.name
+            }));
+
+            await interaction.respond(choices);
+        } catch (error) {
+            console.error('Error in giveitem autocomplete:', error);
+            await interaction.respond([]);
         }
+    }
 });
-    
 // Command to give an item to a user
 client.on("interactionCreate", async interaction => {
-        if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-giveitem") return;
-    
-        // Permission Check
-        if (!checkCommandPermission(interaction)) {
-            return interaction.reply({
-                content: 'You do not have permission to use this command.',
-                flags: 64
-            });
-        }
-    
-        const targetUser = interaction.options.getUser("user");
-        const itemName = interaction.options.getString("item");
-    
-        try {
-            // Check if item exists
-            const item = shopDB.prepare(`
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-giveitem") return;
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64
+        });
+    }
+
+    const targetUser = interaction.options.getUser("user");
+    const itemName = interaction.options.getString("item");
+
+    try {
+        // Check if item exists
+        const item = shopDB.prepare(`
                 SELECT item_id, name 
                 FROM shop_items 
                 WHERE name = ?
             `).get(itemName);
-    
-            if (!item) {
-                return interaction.reply({
-                    content: `❌ Item "${itemName}" not found in the shop.`,
-                    flags: 64
-                });
-            }
-    
-            // Check if user already has the item
-            const existingItem = shopDB.prepare(`
-                SELECT * FROM user_inventory 
-                WHERE user_id = ? AND item_id = ?
-            `).get(targetUser.id, item.item_id);
-    
-            if (existingItem) {
-                return interaction.reply({
-                    content: `❌ ${targetUser.username} already owns "${item.name}".`,
-                    flags: 64
-                });
-            }
-    
-            // Give item to user
-            shopDB.prepare(`
-                INSERT INTO user_inventory (user_id, item_id) 
-                VALUES (?, ?)
-            `).run(targetUser.id, item.item_id);
-    
-            await interaction.reply({
-                content: `✅ Successfully gave "${item.name}" to ${targetUser.username}.`,
-                flags: 64
-            });
-    
-        } catch (error) {
-            console.error('Error in giveitem command:', error);
-            await interaction.reply({
-                content: '❌ An error occurred while processing the command.',
+
+        if (!item) {
+            return interaction.reply({
+                content: `❌ Item "${itemName}" not found in the shop.`,
                 flags: 64
             });
         }
+
+        // Check if user already has the item
+        const existingItem = shopDB.prepare(`
+                SELECT * FROM user_inventory 
+                WHERE user_id = ? AND item_id = ?
+            `).get(targetUser.id, item.item_id);
+
+        if (existingItem) {
+            return interaction.reply({
+                content: `❌ ${targetUser.username} already owns "${item.name}".`,
+                flags: 64
+            });
+        }
+
+        // Give item to user
+        shopDB.prepare(`
+                INSERT INTO user_inventory (user_id, item_id) 
+                VALUES (?, ?)
+            `).run(targetUser.id, item.item_id);
+
+        await interaction.reply({
+            content: `✅ Successfully gave "${item.name}" to ${targetUser.username}.`,
+            flags: 64
+        });
+
+    } catch (error) {
+        console.error('Error in giveitem command:', error);
+        await interaction.reply({
+            content: '❌ An error occurred while processing the command.',
+            flags: 64
+        });
+    }
 });
 
+// ====================================
+//         Shop Event System
+// ====================================
 // Command to create an event
 client.on("interactionCreate", async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -6239,9 +7143,9 @@ client.on("interactionCreate", async interaction => {
                 .setColor("#FFA500")
                 .setFooter({ text: 'Use /tgc-startevent to begin the event' });
 
-            await interaction.reply({ 
-                embeds: [embed], 
-                flags: 64 
+            await interaction.reply({
+                embeds: [embed],
+                flags: 64
             });
 
         } catch (error) {
@@ -6253,7 +7157,6 @@ client.on("interactionCreate", async interaction => {
         }
     }
 });
-
 // Command to start an event
 client.on("interactionCreate", async interaction => {
     if (interaction.isAutocomplete() && interaction.commandName === "tgc-startevent") {
@@ -6342,7 +7245,7 @@ client.on("interactionCreate", async interaction => {
                 `**${eventName}** event!`,
                 '',
                 '**Note:** Use `/tgc-shop` to see the event items in the new shop catogory.'
-                
+
             ].join('\n'))
             .addFields(
                 { name: "Duration", value: `${durationDays} days`, inline: true },
@@ -6358,15 +7261,15 @@ client.on("interactionCreate", async interaction => {
         const announceChannel = interaction.options.getChannel("announce-channel");
         if (announceChannel) {
             await announceChannel.send({ embeds: [embed] });
-            
-            await interaction.reply({ 
+
+            await interaction.reply({
                 content: `✅ Event started and announced in ${announceChannel}!`,
-                flags: 64 
+                flags: 64
             });
         } else {
-            await interaction.reply({ 
-                embeds: [embed], 
-                flags: 64 
+            await interaction.reply({
+                embeds: [embed],
+                flags: 64
             });
         }
 
@@ -6378,12 +7281,11 @@ client.on("interactionCreate", async interaction => {
         });
     }
 });
-
 // Command to end an event
 client.on("interactionCreate", async interaction => {
     if (interaction.isAutocomplete() && interaction.commandName === "tgc-endevent") {
         const focusedValue = interaction.options.getFocused();
-        
+
         // Get active events
         const events = shopDB.prepare(`
             SELECT name FROM events 
@@ -6459,9 +7361,26 @@ client.on("interactionCreate", async interaction => {
     }
 });
 
-// earning currency
+// ====================================
+//         Earning Currency
+// ====================================
 const messageCooldowns = new Map();
+// Add try-catch blocks for database operations
+function calculateBoltBonus(userId) {
+    try {
+        const equippedItems = shopDB.prepare(`
+            SELECT SUM(si.bolt_bonus) as total_bonus
+            FROM shop_items si
+            JOIN user_inventory ui ON si.item_id = ui.item_id
+            WHERE ui.user_id = ? AND ui.is_equipped = 1
+        `).get(userId);
 
+        return 1 + (equippedItems?.total_bonus || 0);
+    } catch (error) {
+        console.error('Error calculating bolt bonus:', error);
+        return 1; // Return default multiplier on error
+    }
+}
 // Function to calculate Bolt bonus based on user ID
 client.on("messageCreate", async message => {
     if (message.author.bot || !message.guild) return;
@@ -6474,7 +7393,7 @@ client.on("messageCreate", async message => {
         const lastMessageTime = messageCooldowns.get(userId);
         if (now - lastMessageTime < cooldownTime) return;
     }
-    
+
     messageCooldowns.set(userId, now);
 
     const baseAmount = Math.floor(Math.random() * 5) + 1; // Base amount (1-5)
@@ -6489,665 +7408,6 @@ client.on("messageCreate", async message => {
 
     console.log(`💰 ${message.author.username} earned ${finalAmount} currency (${boltMultiplier}x multiplier)`);
 });
-
-// =============
-// Gambling
-// =============
-
-// Slot Machine
-const slotCooldowns = new Map(); // Track cooldowns for slots
-
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-
-    if (interaction.commandName === "tgc-slots") {
-        const betAmount = interaction.options.getInteger("amount");
-        const userId = interaction.user.id;
-
-        if (betAmount <= 0) {
-            return interaction.reply({ content: "❌ Bet must be greater than zero!", flags: 64 });
-        }
-
-        // Check balance
-        const userBalance = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?").get(userId)?.balance || 0;
-        if (userBalance < betAmount) {
-            return interaction.reply({ content: "❌ You don't have enough bolts to bet!", flags: 64 });
-        }
-
-        // Check cooldown
-        if (slotCooldowns.has(userId)) {
-            return interaction.reply({ content: "⏳ You must wait before spinning again!", flags: 64 });
-        }
-
-        // Deduct bet
-        shopDB.prepare("UPDATE user_currency SET balance = balance - ? WHERE user_id = ?").run(betAmount, userId);
-
-        // 🎰 Ratchet & Clank Slot Symbols
-        const symbols = ["🔧", "🤖", "🔫", "⚙️", "🚀", "🌌", "🎶"];
-        
-        // Biased roll function that reduces winning chances
-        const biasedRoll = () => {
-            return symbols[Math.floor(Math.random() * symbols.length)];
-        };
-
-        // Determine if this spin should be a winner based on probability
-        const randomValue = Math.random();
-        let slot1, slot2, slot3;
-        
-        if (randomValue < 0.03) {
-            // 3% chance for jackpot (all three matching)
-            const selectedSymbol = symbols[Math.floor(Math.random() * symbols.length)];
-            slot1 = selectedSymbol;
-            slot2 = selectedSymbol;
-            slot3 = selectedSymbol;
-        } else if (randomValue < 0.15) {
-            // 12% chance for small win (two matching)
-            const selectedSymbol = symbols[Math.floor(Math.random() * symbols.length)];
-            const differentSymbol = symbols.filter(s => s !== selectedSymbol)[Math.floor(Math.random() * (symbols.length - 1))];
-            
-            // Randomly decide which position gets the different symbol
-            const differentPosition = Math.floor(Math.random() * 3);
-            if (differentPosition === 0) {
-                slot1 = differentSymbol;
-                slot2 = selectedSymbol;
-                slot3 = selectedSymbol;
-            } else if (differentPosition === 1) {
-                slot1 = selectedSymbol;
-                slot2 = differentSymbol;
-                slot3 = selectedSymbol;
-            } else {
-                slot1 = selectedSymbol;
-                slot2 = selectedSymbol;
-                slot3 = differentSymbol;
-            }
-        } else {
-            // 85% chance for loss (all different or only partial matches that don't count as wins)
-            // Generate three potentially different symbols
-            slot1 = biasedRoll();
-            
-            // Make sure we get a losing combination
-            do {
-                slot2 = biasedRoll();
-                slot3 = biasedRoll();
-            } while ((slot1 === slot2 && slot2 === slot3) || 
-                    (slot1 === slot2) || 
-                    (slot2 === slot3) || 
-                    (slot1 === slot3));
-        }
-
-        let winnings = 0;
-        if (slot1 === slot2 && slot2 === slot3) {
-            winnings = betAmount * 10; // Jackpot win
-        } else if (slot1 === slot2 || slot2 === slot3 || slot1 === slot3) {
-            winnings = betAmount * 2; // Small win
-        }
-
-        // Update balance if user wins
-        if (winnings > 0) {
-            shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(winnings, userId);
-        } else {
-            // Contribute lost bets to jackpot
-            contributeToJackpot(betAmount);
-        }
-
-        // Apply cooldown
-        slotCooldowns.set(userId, true);
-        setTimeout(() => slotCooldowns.delete(userId), 5000);
-
-        // Check jackpot win chance
-        checkJackpotWin(userId, interaction.channel);
-
-        // Embed result
-        const slotEmbed = new EmbedBuilder()
-            .setTitle("🎰 Slot Machine!")
-            .setDescription(`🎲 You rolled: **${slot1} | ${slot2} | ${slot3}**`)
-            .setColor(winnings > 0 ? "#00FF00" : "#FF0000")
-            .setFooter({ text: winnings > 0 ? `You won ⚙️ ${winnings}!` : "Better luck next time!" });
-
-        return interaction.reply({ embeds: [slotEmbed]});
-    }
-});
-
-// Roulette
-const spinCooldowns = new Map(); // Track user cooldowns for roulette
-
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-
-    if (interaction.commandName === "tgc-roulette") {
-        const betAmount = interaction.options.getInteger("amount");
-        const userId = interaction.user.id;
-
-        if (betAmount <= 0) {
-            return interaction.reply({ content: "❌ Bet must be greater than zero!", flags: 64 });
-        }
-
-        // Check user balance
-        const userBalance = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?").get(userId)?.balance || 0;
-        if (userBalance < betAmount) {
-            return interaction.reply({ content: "❌ You don't have enough bolts to bet!", flags: 64 });
-        }
-
-        // Bet selection dropdown
-        const selectMenu = new StringSelectMenuBuilder()
-            .setCustomId(`roulette_bet_${betAmount}`)
-            .setPlaceholder("Select a bet type")
-            .addOptions([
-                { label: "Red", value: "red", emoji: "🟥" },
-                { label: "Black", value: "black", emoji: "⬛" },
-                { label: "Green (0)", value: "green", emoji: "🟩" }
-            ]);
-
-        const row = new ActionRowBuilder().addComponents(selectMenu);
-
-        await interaction.reply({
-            content: "🎡 Place your bet:",
-            components: [row],
-            flags: 64
-        });
-    }
-});
-
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isStringSelectMenu() || !interaction.customId.startsWith("roulette_bet_")) return;
-
-    const userId = interaction.user.id;
-    const selectedBet = interaction.values[0];
-    const betAmount = parseInt(interaction.customId.split("_")[2]);
-
-    // Check cooldown
-    if (spinCooldowns.has(userId)) {
-        return interaction.reply({ content: "⏳ You must wait before spinning again!", flags: 64 });
-    }
-
-    // Deduct bet
-    shopDB.prepare("UPDATE user_currency SET balance = balance - ? WHERE user_id = ?").run(betAmount, userId);
-
-    // Simulate spin with reduced winning chances
-    // Instead of a fair 37 numbers (0-36), we'll use a biased approach
-    let winningNumber;
-    const randomValue = Math.random();
-    
-    // Increase the chance of getting numbers that don't match the user's bet
-    if (selectedBet === "red") {
-        // Bias toward black and green (0)
-        if (randomValue < 0.6) {
-            // Generate a black number (odd numbers)
-            winningNumber = 2 * Math.floor(Math.random() * 18) + 1;
-        } else if (randomValue < 0.65) {
-            // Green (0)
-            winningNumber = 0;
-        } else {
-            // Red number (even numbers except 0)
-            winningNumber = 2 * Math.floor(Math.random() * 18 + 1);
-        }
-    } else if (selectedBet === "black") {
-        // Bias toward red and green (0)
-        if (randomValue < 0.6) {
-            // Generate a red number (even numbers except 0)
-            winningNumber = 2 * Math.floor(Math.random() * 18 + 1);
-        } else if (randomValue < 0.65) {
-            // Green (0)
-            winningNumber = 0;
-        } else {
-            // Black number (odd numbers)
-            winningNumber = 2 * Math.floor(Math.random() * 18) + 1;
-        }
-    } else {
-        // For green (0) bets, make it extremely unlikely to win
-        if (randomValue < 0.98) {
-            // Generate any non-zero number
-            winningNumber = Math.floor(Math.random() * 36) + 1;
-        } else {
-            winningNumber = 0;
-        }
-    }
-
-    const winningColor = winningNumber === 0 ? "green" : winningNumber % 2 === 0 ? "red" : "black";
-
-    let winnings = 0;
-    if (selectedBet === winningColor) {
-        if (selectedBet === "green") {
-            winnings = betAmount * 14; // Keep the same payout for the rare green win
-        } else {
-            winnings = betAmount * 2; // Standard payout for red/black
-        }
-    }
-
-    // Update balance if user wins
-    if (winnings > 0) {
-        shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(winnings, userId);
-    } else {
-        // Contribute lost bets to jackpot
-        contributeToJackpot(betAmount);
-    }
-
-    // Apply cooldown
-    spinCooldowns.set(userId, true);
-    setTimeout(() => spinCooldowns.delete(userId), 5000);
-
-    // Reduce jackpot win chance
-    checkJackpotWin(userId, interaction.channel);
-
-    // Embed result
-    const rouletteEmbed = new EmbedBuilder()
-        .setTitle("🎡 Roulette Spin!")
-        .setDescription(`🎲 Winning Number: **${winningNumber}** (${winningColor.toUpperCase()})`)
-        .setColor(winnings > 0 ? "#00FF00" : "#FF0000")
-        .setFooter({ text: winnings > 0 ? `You won ⚙️ ${winnings}!` : "Better luck next time!" });
-
-    return interaction.reply({ embeds: [rouletteEmbed]});
-});
-
-// Toggle Crates Command
-client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-togglecrates") return;
-
-    // Permission Check
-    if (!checkCommandPermission(interaction)) {
-        return interaction.reply({
-            content: 'You do not have permission to use this command.',
-            flags: 64
-        });
-    }
-
-    const channel = interaction.options.getChannel("channel");
-    
-    try {
-        // Check if channel is already disabled
-        const isDisabled = db.prepare(
-            "SELECT channel_id FROM disabled_crate_channels WHERE channel_id = ?"
-        ).get(channel.id);
-
-        if (isDisabled) {
-            // Enable crates by removing from disabled list
-            db.prepare(
-                "DELETE FROM disabled_crate_channels WHERE channel_id = ?"
-            ).run(channel.id);
-
-            await interaction.reply({
-                content: `✅ Crates will now spawn in ${channel}`,
-                flags: 64
-            });
-        } else {
-            // Disable crates by adding to disabled list
-            db.prepare(
-                "INSERT INTO disabled_crate_channels (channel_id, guild_id) VALUES (?, ?)"
-            ).run(channel.id, interaction.guild.id);
-
-            await interaction.reply({
-                content: `❌ Crates will no longer spawn in ${channel}`,
-                flags: 64
-            });
-        }
-    } catch (error) {
-        console.error('Error toggling crate spawns:', error);
-        await interaction.reply({
-            content: '❌ An error occurred while toggling crate spawns.',
-            flags: 64
-        });
-    }
-});
-
-//bolt crates
-const boltCrateChances = 0.01; // 1% chance per message
-const boltCrates = [
-    { name: "Small Crate", min: 50, max: 200, color: "#C0C0C0" },    // Silver
-    { name: "Medium Crate", min: 200, max: 500, color: "#FFD700" },  // Gold
-    { name: "Large Crate", min: 500, max: 1000, color: "#FF0000" }   // Red
-];
-
-client.on("messageCreate", async (message) => {
-    if (message.author.bot || !message.guild) return;
-
-    // Check if crates are disabled in this channel
-    const isDisabled = db.prepare(
-        "SELECT channel_id FROM disabled_crate_channels WHERE channel_id = ?"
-    ).get(message.channel.id);
-
-    if (isDisabled) return;
-
-    if (Math.random() < boltCrateChances) {
-
-        const crate = boltCrates[Math.floor(Math.random() * boltCrates.length)];
-        const bolts = Math.floor(Math.random() * (crate.max - crate.min + 1)) + crate.min;
-
-        const embed = new EmbedBuilder()
-            .setTitle("A Bolt Crate Appeared!")
-            .setDescription(`Click the button below to claim the **${crate.name}** and receive bolts!`)
-            .addFields({ name: "🔧 Possible Reward:", value: ` **${crate.min} - ${crate.max}** Bolts` })
-            .setColor(crate.color) // Now uses the color specific to the crate rarity
-            .setThumbnail("https://static.wikia.nocookie.net/ratchet/images/0/0e/Bolt_crate_from_R%26C_%282002%29_render.png") // Replace with actual image URL
-
-        const button = new ButtonBuilder()
-            .setCustomId(`claim_bolt_crate_${bolts}`)
-            .setLabel("🔧 Claim Crate")
-            .setStyle(ButtonStyle.Success);
-
-        const actionRow = new ActionRowBuilder().addComponents(button);
-
-        await message.channel.send({
-            embeds: [embed],
-            components: [actionRow]
-        });
-    }
-});
-
-// Handle Bolt Crate Claim
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isButton() || !interaction.customId.startsWith("claim_bolt_crate_")) return;
-
-    const baseAmount = parseInt(interaction.customId.split("_")[3]);
-    const userId = interaction.user.id;
-    const boltMultiplier = calculateBoltBonus(userId);
-    const finalAmount = Math.floor(baseAmount * boltMultiplier);
-
-    shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?")
-        .run(finalAmount, userId);
-
-    const embed = new EmbedBuilder()
-        .setTitle("✅ Bolt Crate Claimed!")
-        .setDescription([
-            `**${interaction.user.username}** has claimed the crate and received **${finalAmount} bolts**!`,
-            boltMultiplier > 1 ? `*(Includes ${((boltMultiplier - 1) * 100).toFixed(0)}% bonus from equipped items)*` : ''
-        ].join('\n'))
-        .setColor("#00FF00")
-        .setThumbnail("https://static.wikia.nocookie.net/ratchet/images/0/0e/Bolt_crate_from_R%26C_%282002%29_render.png");
-
-    await interaction.update({
-        embeds: [embed],
-        components: []
-    });
-});
-
-const mysteryCrateChances = 0.005; // .5% chance per message
-const mysteryCrates = {
-    common: {
-        name: "Common Mystery Crate",
-        color: "#AAAAAA",
-        image: "https://static.wikia.nocookie.net/ratchet/images/5/53/Ammo_crate_from_UYA_render.png",
-        boltReward: [50, 150], // Min-Max bolts
-        priceRange: [0, 500] // Items worth up to 500 bolts
-    },
-    rare: {
-        name: "Rare Mystery Crate",
-        color: "#1E90FF",
-        image: "https://static.wikia.nocookie.net/ratchet/images/5/53/Ammo_crate_from_UYA_render.png",
-        boltReward: [200, 500],
-        priceRange: [500, 1500]
-    },
-    legendary: {
-        name: "Legendary Mystery Crate",
-        color: "#FFD700",
-        image: "https://static.wikia.nocookie.net/ratchet/images/5/53/Ammo_crate_from_UYA_render.png",
-        boltReward: [1000, 2500],
-        priceRange: [1500, Infinity]
-    }
-};
-
-client.on("messageCreate", async (message) => {
-    if (message.author.bot || !message.guild) return;
-
-    // Check if crates are disabled in this channel
-    const isDisabled = db.prepare(
-        "SELECT channel_id FROM disabled_crate_channels WHERE channel_id = ?"
-    ).get(message.channel.id);
-
-    if (isDisabled) return;
-
-    if (Math.random() < mysteryCrateChances) {
-
-        const rarity = ["common", "rare", "legendary"][Math.floor(Math.random() * 3)];
-        const crate = mysteryCrates[rarity];
-
-        const embed = new EmbedBuilder()
-            .setTitle(`🌀 A ${crate.name} Appeared!`)
-            .setDescription(`Click the button below to **open the crate** and claim your reward!`)
-            .setColor(crate.color)
-            .setThumbnail(crate.image);
-
-        const button = new ButtonBuilder()
-            .setCustomId(`open_mystery_crate_${rarity}`)
-            .setLabel("Open Crate")
-            .setStyle(ButtonStyle.Primary);
-
-        const actionRow = new ActionRowBuilder().addComponents(button);
-
-        await message.channel.send({
-            embeds: [embed],
-            components: [actionRow]
-        });
-    }
-});
-
-// Handle Mystery Crate Opening
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isButton() || !interaction.customId.startsWith("open_mystery_crate_")) return;
-
-    const rarity = interaction.customId.split("_")[3];
-    const userId = interaction.user.id;
-    const crate = mysteryCrates[rarity];
-
-    let reward;
-    if (Math.random() < 0.5) { // 50% chance for bolts, 50% for an item
-        // 🎉 Bolt Reward
-        const bolts = Math.floor(Math.random() * (crate.boltReward[1] - crate.boltReward[0] + 1)) + crate.boltReward[0];
-        shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(bolts, userId);
-        reward = ` **${bolts} bolts**`;
-    } else {
-        //  Item Reward
-        const items = shopDB.prepare("SELECT item_id, name FROM shop_items WHERE price BETWEEN ? AND ?").all(crate.priceRange[0], crate.priceRange[1]);
-
-        if (items.length > 0) {
-            const item = items[Math.floor(Math.random() * items.length)];
-
-            //  Check if user already owns the item
-            const existingItem = shopDB.prepare("SELECT * FROM user_inventory WHERE user_id = ? AND item_id = ?").get(userId, item.item_id);
-
-            if (existingItem) {
-                reward = `🔄 **Duplicate item detected!** You already own **${item.name}**.\nYou received **${crate.boltReward[0]} bolts instead!**`;
-                shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(crate.boltReward[0], userId);
-            } else {
-                shopDB.prepare("INSERT INTO user_inventory (user_id, item_id) VALUES (?, ?)").run(userId, item.item_id);
-                reward = ` **${item.name}**`;
-            }
-        } else {
-            reward = ` **${crate.boltReward[0]} bolts** (No items available in this price range)`;
-            shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(crate.boltReward[0], userId);
-        }
-    }
-
-    const embed = new EmbedBuilder()
-        .setTitle(`🎉 ${interaction.user.username} Opened a ${crate.name}!`)
-        .setDescription(`They received **${reward}**!`)
-        .setColor(crate.color)
-        .setThumbnail(crate.image);
-
-    await interaction.update({
-        embeds: [embed],
-        components: []
-    });
-});
-
-// Add lost bets to the jackpot pool
-function contributeToJackpot(amount) {
-    shopDB.prepare("UPDATE jackpot SET amount = amount + ? WHERE id = 1").run(amount);
-    console.log(`⚙️ Added ${amount} to the jackpot!`);
-}
-
-// Check if a user wins the jackpot
-function checkJackpotWin(userId) {
-    const jackpotAmount = shopDB.prepare("SELECT amount FROM jackpot WHERE id = 1").get()?.amount || 0;
-
-    // 5% chance to win the jackpot
-    if (Math.random() < 0.05 && jackpotAmount > 0) {
-        announceJackpotWin(userId, jackpotAmount);
-        shopDB.prepare("UPDATE jackpot SET amount = 0 WHERE id = 1").run(); // Reset jackpot
-    }
-}
-
-// Announce jackpot win and give winnings
-async function announceJackpotWin(userId, amount, channel) {
-    // Update user's balance
-    shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(amount, userId);
-    
-    // Send announcement in channel
-    if (channel) {
-        await channel.send({
-            content: `🎉 Congratulations <@${userId}>! You won the jackpot of **⚙️ ${amount}** bolts! 🎰`,
-            allowedMentions: { users: [userId] }
-        }).catch(console.error);
-    }
-    
-    console.log(`🎊 Jackpot won by ${userId}: ⚙️ ${amount}`);
-}
-
-// In-memory cooldown map
-const xpCooldowns = new Map();
-
-// Function to calculate level based on XP
-function calculateLevel(xp, baseXp, multiplier) {
-    let level = 1;
-    let xpForCurrentLevel = baseXp; // Start with base XP for level 1
-
-    while (xp >= xpForCurrentLevel) {
-        xp -= xpForCurrentLevel; // Subtract XP required for the current level
-        level++;
-        xpForCurrentLevel = Math.ceil(baseXp * Math.pow(multiplier, level - 1)); // Exponential growth for each level
-    }
-
-    return level;
-}
-
-// XP Tracking
-client.on('messageCreate', (message) => {
-    if (message.author.bot || !message.guild) return;
-
-    const userId = message.author.id;
-    const guildId = message.guild.id;
-
-    // Cooldown check (60 seconds by default)
-    const cooldown = 60000; // 60 seconds in milliseconds
-    const now = Date.now();
-    if (xpCooldowns.has(userId) && now - xpCooldowns.get(userId) < cooldown) {
-        return; // User is on cooldown
-    }
-
-    xpCooldowns.set(userId, now); // Update cooldown timestamp
-
-    // Fetch base XP and multiplier globally
-    const settings = db.prepare(`
-        SELECT base_xp, multiplier FROM guild_settings WHERE guild_id = 'global'
-    `).get() || { base_xp: 300, multiplier: 1.2 };
-
-    const { base_xp: baseXp, multiplier } = settings;
-
-    if (!baseXp || !multiplier) {
-        console.error("Base XP or multiplier is missing from the settings.");
-        return;
-    }
-
-    // XP gain logic: Generate random XP gain between 5 and 20
-    const xpGain = parseFloat((Math.random() * (20 - 5) + 5).toFixed(2));
-
-    // Get user's current XP before update
-    const userData = db.prepare(`SELECT xp FROM user_xp WHERE user_id = ?`).get(userId);
-    const oldXp = userData ? userData.xp : 0;
-    const oldLevel = calculateLevel(oldXp, baseXp, multiplier);
-
-    // Update or insert XP for the user
-    db.prepare(`
-        INSERT INTO user_xp (user_id, xp)
-        VALUES (?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET xp = xp + excluded.xp
-    `).run(userId, xpGain);
-
-    // Fetch total XP for the user after update
-    const { xp: totalXp } = db.prepare(`
-        SELECT xp FROM user_xp WHERE user_id = ?
-    `).get(userId);
-
-    // Calculate the user's current level
-    const newLevel = calculateLevel(totalXp, baseXp, multiplier);
-
-    // Check Level Up
-    if (newLevel > oldLevel) {
-        handleLevelUp(userId, guildId, newLevel);
-    }
-    
-    // Log the XP gain and user's level
-    console.log(`User '${message.author.username}' gained ${xpGain} XP, has ${totalXp.toFixed(2)} total XP, and is level ${newLevel}.`);
-
-    // Guild-specific role assignment logic
-    const rows = db.prepare(`
-        SELECT level, role_id FROM level_roles WHERE guild_id = ?
-    `).all(message.guild.id);
-
-    // Sort roles by level in ascending order
-    rows.sort((a, b) => a.level - b.level);
-
-    const rolesToRemove = [];
-    let highestRole = null;
-
-    rows.forEach(({ level: requiredLevel, role_id }) => {
-        const role = message.guild.roles.cache.get(role_id);
-        if (role) {
-            if (newLevel >= requiredLevel) {
-                highestRole = role; // Keep track of the highest role user qualifies for
-            } else {
-                rolesToRemove.push(role); // Collect roles that should be removed
-            }
-        }
-    });
-
-    // Assign and remove roles
-    const member = message.guild.members.cache.get(userId);
-    if (member) {
-        // Remove all level roles except the highestRole
-        rows.forEach(({ role_id }) => {
-            const role = message.guild.roles.cache.get(role_id);
-            if (role && member.roles.cache.has(role.id) && role !== highestRole) {
-                member.roles.remove(role).then(() => {
-                    console.log(`Removed role '${role.name}' from '${message.author.username}'.`);
-                }).catch(err => {
-                    console.error(`Error removing role '${role.name}':`, err);
-                });
-            }
-        });
-
-        // Assign the highest qualifying role
-        if (highestRole && !member.roles.cache.has(highestRole.id)) {
-            member.roles.add(highestRole).then(() => {
-                console.log(`Assigned role '${highestRole.name}' to '${message.author.username}'.`);
-            }).catch(err => {
-                console.error(`Error assigning role '${highestRole.name}':`, err);
-            });
-        }
-    }
-});
-
-function handleLevelUp(userId, guildId, newLevel) {
-    // Fetch the set level-up notification channel
-    // Using the same db as the rest of the code (changed from shopDB)
-    const levelUpChannelData = db.prepare("SELECT channel_id FROM level_up_notifications WHERE guild_id = ?").get(guildId);
-    
-    if (!levelUpChannelData) return; // No channel set
-
-    const levelUpChannel = client.channels.cache.get(levelUpChannelData.channel_id);
-    if (!levelUpChannel) return;
-
-    // 🎉 Level-Up Embed
-    const embed = new EmbedBuilder()
-        .setTitle("🎉 Level Up!")
-        .setDescription(`Congratulations <@${userId}>! You've reached **Level ${newLevel}!** 🚀`)
-        .setColor("#00FF00")
-        .setThumbnail(client.users.cache.get(userId)?.displayAvatarURL() || null)
-        .setFooter({ text: "Keep chatting to level up more!" });
-
-    // Send the notification
-    levelUpChannel.send({ content: `<@${userId}>`, embeds: [embed] }).catch(console.error);
-}
-
 // Leaderboard
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
@@ -7249,84 +7509,877 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.editReply({ components: [row] });
         });
     }
-});
-
-// Battle Leaderboard
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-
     if (interaction.commandName === "tgc-battleleaderboard") {
-        await interaction.deferReply(); // Prevents timeout while fetching user data
+        await interaction.deferReply();
 
-        // Fetch top 10 players sorted by most wins
-        const topBattlers = shopDB.prepare(`
-            SELECT user_id, wins, losses 
-            FROM deathbattle_stats 
-            ORDER BY wins DESC 
-            LIMIT 10
-        `).all() || [];
+        try {
+            // Fetch players and calculate K/D ratio
+            const topBattlers = shopDB.prepare(`
+                SELECT 
+                    user_id, 
+                    wins, 
+                    losses,
+                    CAST(wins AS FLOAT) / CASE WHEN losses = 0 THEN 1 ELSE losses END AS kd_ratio
+                FROM deathbattle_stats 
+                WHERE wins > 0 OR losses > 0
+                ORDER BY kd_ratio DESC 
+                LIMIT 10
+            `).all() || [];
 
-        // Ensure data exists
-        if (!topBattlers.length) {
-            return interaction.editReply({ content: "📉 No battle data found!", flags: 64 });
-        }
-
-        // Create embed
-        const battleEmbed = new EmbedBuilder()
-            .setColor("#FF4500")
-            .setTitle("⚔️ Death Battle Leaderboard")
-            .setDescription("Top 10 users with the most wins in Death Battle")
-            .setTimestamp();
-
-        // Fetch user info and add fields to the embed
-        for (const [index, user] of topBattlers.entries()) {
-            let displayName;
-            try {
-                const member = await interaction.guild.members.fetch(user.user_id);
-                displayName = member ? member.displayName : `Unknown Member (${user.user_id})`;
-            } catch (err) {
-                console.error(`Error fetching guild member ${user.user_id}:`, err);
-                displayName = `Unknown Member (${user.user_id})`;
+            if (!topBattlers.length) {
+                return interaction.editReply({ content: "📉 No battle data found!", flags: 64 });
             }
 
-            battleEmbed.addFields({
-                name: `#${index + 1} - **${displayName}**`,
-                value: `🏆 Wins: **${user.wins}** | 💀 Losses: **${user.losses}**`,
-                inline: false
-            });
-        }
+            const battleEmbed = new EmbedBuilder()
+                .setColor("#FF4500")
+                .setTitle("⚔️ Death Battle Leaderboard")
+                .setDescription("Top 10 users ranked by K/D Ratio (Wins/Losses)")
+                .setTimestamp();
 
-        // Send leaderboard embed
-        await interaction.editReply({ embeds: [battleEmbed] });
+            // Fetch all members at once to reduce API calls
+            const memberPromises = topBattlers.map(user =>
+                interaction.guild.members.fetch(user.user_id)
+                    .catch(() => null) // Return null if member fetch fails
+            );
+
+            // Wait for all member fetches to complete
+            const members = await Promise.all(memberPromises);
+
+            // Create a map of user IDs to their display names
+            const userDisplayNames = new Map();
+            members.forEach((member, index) => {
+                const userId = topBattlers[index].user_id;
+                if (member) {
+                    userDisplayNames.set(userId, member.displayName);
+                } else {
+                    // Try to fetch user if member fetch failed
+                    client.users.fetch(userId)
+                        .then(user => userDisplayNames.set(userId, user.username))
+                        .catch(() => userDisplayNames.set(userId, `User #${userId}`));
+                }
+            });
+
+            // Add fields to embed
+            for (const [index, user] of topBattlers.entries()) {
+                const displayName = userDisplayNames.get(user.user_id) || `User #${user.user_id}`;
+                const kdRatio = (user.wins / (user.losses || 1)).toFixed(2);
+
+                battleEmbed.addFields({
+                    name: `#${index + 1} - ${displayName}`,
+                    value: `🎯 K/D: **${kdRatio}** (🏆 ${user.wins} / 💀 ${user.losses})`,
+                    inline: false
+                });
+            }
+
+            await interaction.editReply({ embeds: [battleEmbed] });
+
+        } catch (error) {
+            console.error('Error in tgc-battleleaderboard command:', error);
+            await interaction.editReply({
+                content: "An error occurred while fetching the leaderboard. Please try again later.",
+                flags: 64
+            }).catch(() => { });
+        }
     }
 });
 
-// Bot Ready
+// =============
+// Gambling
+// =============
+// Gambling Constants
+const COOLDOWN_DURATION = 5000;
+const JACKPOT_CHANCE = 0.03;
+const SMALL_WIN_CHANCE = 0.15;
+const JACKPOT_MULTIPLIER = 10;
+const SMALL_WIN_MULTIPLIER = 2;
+const slotCooldowns = new Map();
+const spinCooldowns = new Map();
+const SYMBOLS = Object.freeze(["🔧", "🤖", "🔫", "⚙️", "🚀", "🌌", "🎶"]);
+const getRandomSymbol = () => SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+const generateSlotCombination = () => {
+    const random = Math.random();
 
-// Run synchronization every 5 minutes
-client.once('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}`);
-    await synchronizeBans(); // Run the sync on startup
+    if (random < JACKPOT_CHANCE) {
+        const symbol = getRandomSymbol();
+        return [symbol, symbol, symbol];
+    }
+
+    if (random < SMALL_WIN_CHANCE) {
+        const symbol = getRandomSymbol();
+        const differentSymbol = SYMBOLS.find(s => s !== symbol);
+        const position = Math.floor(Math.random() * 3);
+
+        return Array(3).fill(symbol).map((s, i) => i === position ? differentSymbol : s);
+    }
+
+    // Generate losing combination
+    const slots = [getRandomSymbol()];
+    do {
+        slots[1] = getRandomSymbol();
+        slots[2] = getRandomSymbol();
+    } while (new Set(slots).size !== 3);
+
+    return slots;
+};
+const calculateWinnings = (slots, betAmount) => {
+    const [slot1, slot2, slot3] = slots;
+    if (slot1 === slot2 && slot2 === slot3) return betAmount * JACKPOT_MULTIPLIER;
+    if (slot1 === slot2 || slot2 === slot3 || slot1 === slot3) return betAmount * SMALL_WIN_MULTIPLIER;
+    return 0;
+};
+const createSlotEmbed = (slots, betAmount, winnings, newBalance) => {
+    return new EmbedBuilder()
+        .setTitle("🎰 Slot Machine!")
+        .setDescription([
+            `🎲 You rolled: **${slots.join(' | ')}**`,
+            '',
+            `💰 Bet Amount: **${betAmount.toLocaleString()}** ${CURRENCY_EMOJI}`,
+            winnings > 0 ? `🎉 Winnings: **${winnings.toLocaleString()}** ${CURRENCY_EMOJI}` : '❌ No win this time!',
+            `💳 New Balance: **${newBalance.toLocaleString()}** ${CURRENCY_EMOJI}`
+        ].join('\n'))
+        .setColor(winnings > 0 ? "#00FF00" : "#FF0000")
+        .setFooter({
+            text: winnings > 0
+                ? `Congratulations! You won ${winnings.toLocaleString()} ${CURRENCY_NAME}!`
+                : `Better luck next time! Lost ${betAmount.toLocaleString()} ${CURRENCY_NAME}`
+        })
+        .setTimestamp();
+};
+// Add lost bets to the jackpot pool
+function contributeToJackpot(amount) {
+    shopDB.prepare("UPDATE jackpot SET amount = amount + ? WHERE id = 1").run(amount);
+    console.log(`⚙️ Added ${amount} to the jackpot!`);
+}
+// Check if a user wins the jackpot
+function checkJackpotWin(userId, channel, hasWon) {
+    // Only check for jackpot if the user won their bet
+    if (!hasWon) return false;
+
+    const jackpotAmount = shopDB.prepare("SELECT amount FROM jackpot WHERE id = 1").get()?.amount || 0;
+
+    // 1% chance to win the jackpot
+    if (Math.random() < 0.01 && jackpotAmount > 0) {
+        announceJackpotWin(userId, jackpotAmount, channel);
+        shopDB.prepare("UPDATE jackpot SET amount = 0 WHERE id = 1").run(); // Reset jackpot
+        return true;
+    }
+    return false;
+}
+// Announce jackpot win and give winnings
+async function announceJackpotWin(userId, amount, channel) {
+    // Update user's balance
+    shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?").run(amount, userId);
+
+    // Send announcement in channel
+    if (channel) {
+        await channel.send({
+            content: `🎉 Congratulations <@${userId}>! You won the jackpot of **⚙️ ${amount}** bolts! 🎰`,
+            allowedMentions: { users: [userId] }
+        }).catch(error => {
+            console.error("Failed to send jackpot announcement:", error);
+        });
+    } else {
+        console.error("Cannot announce jackpot: Channel is undefined");
+    }
+
+    console.log(`🎊 Jackpot won by ${userId}: ⚙️ ${amount}`);
+}
+// Main command handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-slots") return;
+
+    try {
+        const betAmount = interaction.options.getInteger("amount");
+        const userId = interaction.user.id;
+
+        // Validation checks
+        if (betAmount <= 0) {
+            return interaction.reply({
+                content: "❌ Bet must be greater than zero!",
+                ephemeral: true
+            });
+        }
+
+        const userBalance = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?")
+            .get(userId)?.balance || 0;
+
+        if (userBalance < betAmount) {
+            return interaction.reply({
+                content: `❌ Insufficient balance! (Need: **${betAmount.toLocaleString()}**, Have: **${userBalance.toLocaleString()}**)`,
+                ephemeral: true
+            });
+        }
+
+        if (slotCooldowns.has(userId)) {
+            return interaction.reply({
+                content: "⏳ You must wait before spinning again!",
+                ephemeral: true
+            });
+        }
+
+        // Game logic
+        const slots = generateSlotCombination();
+        const winnings = calculateWinnings(slots, betAmount);
+
+        // Database operations
+        const db = shopDB.transaction(() => {
+            shopDB.prepare("UPDATE user_currency SET balance = balance - ? WHERE user_id = ?")
+                .run(betAmount, userId);
+
+            if (winnings > 0) {
+                shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?")
+                    .run(winnings, userId);
+                checkJackpotWin(userId, interaction.channel, true);
+            } else {
+                contributeToJackpot(betAmount);
+            }
+        });
+
+        db();
+
+        // Cooldown
+        slotCooldowns.set(userId, true);
+        setTimeout(() => slotCooldowns.delete(userId), COOLDOWN_DURATION);
+
+        // Get final balance and send response
+        const newBalance = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?")
+            .get(userId)?.balance || 0;
+
+        const embed = createSlotEmbed(slots, betAmount, winnings, newBalance);
+        return interaction.reply({ embeds: [embed] });
+
+    } catch (error) {
+        console.error('Slot machine error:', error);
+        return interaction.reply({
+            content: "An error occurred while processing your bet.",
+            ephemeral: true
+        });
+    }
 });
-setInterval(async () => {
-    await synchronizeBans();
-}, 5 * 60 * 1000); // 5 minutes
+// roulette game
+const MULTIPLIERS = Object.freeze({
+    red: 2,
+    black: 2,
+    green: 14
+});
+const COLOR_EMOJIS = Object.freeze({
+    red: "🔴",
+    black: "⚫",
+    green: "🟢"
+});
+const BET_OPTIONS = Object.freeze([
+    { label: "Red", value: "red", emoji: "🟥" },
+    { label: "Black", value: "black", emoji: "⬛" },
+    { label: "Green (0)", value: "green", emoji: "🟩" }
+]);
+const WIN_CHANCES = Object.freeze({
+    red: 0.6,
+    black: 0.6,
+    green: 0.02
+});
+// Utility functions
+class RouletteGame {
+    static generateWinningNumber(selectedBet) {
+        const random = Math.random();
+        const threshold = WIN_CHANCES[selectedBet];
 
+        if (selectedBet === "green") {
+            return random < threshold ? 0 : Math.floor(Math.random() * 36) + 1;
+        }
+
+        if (random < threshold) {
+            return selectedBet === "red"
+                ? 2 * Math.floor(Math.random() * 18) + 1
+                : 2 * Math.floor(Math.random() * 18 + 1);
+        }
+
+        if (random < threshold + 0.05) {
+            return 0;
+        }
+
+        return selectedBet === "red"
+            ? 2 * Math.floor(Math.random() * 18 + 1)
+            : 2 * Math.floor(Math.random() * 18) + 1;
+    }
+
+    static getWinningColor(number) {
+        return number === 0 ? "green" : number % 2 === 0 ? "red" : "black";
+    }
+
+    static calculateWinnings(betAmount, selectedBet, winningColor) {
+        return selectedBet === winningColor ? betAmount * MULTIPLIERS[selectedBet] : 0;
+    }
+
+    static createEmbed(data) {
+        const { selectedBet, betAmount, winningNumber, winningColor, winnings, initialBalance, newBalance } = data;
+
+        return new EmbedBuilder()
+            .setTitle("🎡 Roulette Spin Results!")
+            .setDescription([
+                `${COLOR_EMOJIS[selectedBet]} You bet on: **${selectedBet.toUpperCase()}**`,
+                `💰 Bet Amount: **${betAmount.toLocaleString()}** ${CURRENCY_EMOJI}`,
+                '',
+                '**Spin Result:**',
+                `${COLOR_EMOJIS[winningColor]} Number: **${winningNumber}**`,
+                `🎨 Color: **${winningColor.toUpperCase()}**`,
+                '',
+                winnings > 0
+                    ? `🎉 **Winner!** You won **${winnings.toLocaleString()}** ${CURRENCY_EMOJI}`
+                    : `❌ **No win this time!** Lost **${betAmount.toLocaleString()}** ${CURRENCY_EMOJI}`,
+                '',
+                `💳 Balance Update:`,
+                `Before: **${initialBalance.toLocaleString()}** ${CURRENCY_EMOJI}`,
+                `After: **${newBalance.toLocaleString()}** ${CURRENCY_EMOJI}`
+            ].join('\n'))
+            .setColor(winnings > 0 ? "#00FF00" : "#FF0000")
+            .setFooter({
+                text: winnings > 0
+                    ? `Congratulations! ${winnings.toLocaleString()} ${CURRENCY_NAME} won!`
+                    : `Better luck next time! Try again?`
+            })
+            .setTimestamp()
+            .addFields({
+                name: "📊 Payout Multipliers",
+                value: Object.entries(MULTIPLIERS)
+                    .map(([color, mult]) => `${COLOR_EMOJIS[color]} ${color.charAt(0).toUpperCase() + color.slice(1)}: ${mult}x`)
+                    .join('\n'),
+                inline: true
+            });
+    }
+}
+// Command handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-roulette") return;
+
+    try {
+        const betAmount = interaction.options.getInteger("amount");
+        const userId = interaction.user.id;
+
+        if (betAmount <= 0) {
+            return interaction.reply({
+                content: "❌ Bet must be greater than zero!",
+                ephemeral: true
+            });
+        }
+
+        const userBalance = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?")
+            .get(userId)?.balance || 0;
+
+        if (userBalance < betAmount) {
+            return interaction.reply({
+                content: "❌ Insufficient balance!",
+                ephemeral: true
+            });
+        }
+
+        const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId(`roulette_bet_${betAmount}`)
+            .setPlaceholder("Select a bet type")
+            .addOptions(BET_OPTIONS);
+
+        const row = new ActionRowBuilder().addComponents(selectMenu);
+
+        await interaction.reply({
+            content: "🎡 Place your bet:",
+            components: [row]
+        });
+    } catch (error) {
+        console.error('Roulette command error:', error);
+        await interaction.reply({
+            content: "An error occurred while starting the game.",
+            ephemeral: true
+        });
+    }
+});
+// Selection handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isStringSelectMenu() || !interaction.customId.startsWith("roulette_bet_")) return;
+
+    try {
+        const userId = interaction.user.id;
+        const selectedBet = interaction.values[0];
+        const betAmount = parseInt(interaction.customId.split("_")[2]);
+
+        if (userId !== interaction.message.interaction.user.id) {
+            return interaction.reply({
+                content: "❌ Only the person who started this game can place this bet!",
+                ephemeral: true
+            });
+        }
+
+        if (spinCooldowns.has(userId)) {
+            return interaction.reply({
+                content: "⏳ You must wait before spinning again!",
+                ephemeral: true
+            });
+        }
+
+        await interaction.deferUpdate();
+
+        const db = shopDB.transaction(() => {
+            const initialBalance = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?")
+                .get(userId)?.balance || 0;
+
+            shopDB.prepare("UPDATE user_currency SET balance = balance - ? WHERE user_id = ?")
+                .run(betAmount, userId);
+
+            const winningNumber = RouletteGame.generateWinningNumber(selectedBet);
+            const winningColor = RouletteGame.getWinningColor(winningNumber);
+            const winnings = RouletteGame.calculateWinnings(betAmount, selectedBet, winningColor);
+
+            if (winnings > 0) {
+                shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?")
+                    .run(winnings, userId);
+                checkJackpotWin(userId, interaction.channel, true);
+            } else {
+                contributeToJackpot(betAmount);
+            }
+
+            const newBalance = shopDB.prepare("SELECT balance FROM user_currency WHERE user_id = ?")
+                .get(userId)?.balance || 0;
+
+            return { initialBalance, newBalance, winningNumber, winningColor, winnings };
+        });
+
+        const result = db();
+
+        spinCooldowns.set(userId, true);
+        setTimeout(() => spinCooldowns.delete(userId), COOLDOWN_DURATION);
+
+        const embed = RouletteGame.createEmbed({
+            selectedBet,
+            betAmount,
+            ...result
+        });
+
+        await interaction.message.edit({
+            content: null,
+            embeds: [embed],
+            components: []
+        });
+
+    } catch (error) {
+        console.error('Roulette selection error:', error);
+        await interaction.reply({
+            content: "An error occurred while processing your bet.",
+            ephemeral: true
+        });
+    }
+});
+
+// ====================================
+//               Crates
+// ====================================
+// Toggle Crates Command
+client.on("interactionCreate", async interaction => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "tgc-togglecrates") return;
+
+    // Permission Check
+    if (!checkCommandPermission(interaction)) {
+        return interaction.reply({
+            content: 'You do not have permission to use this command.',
+            flags: 64
+        });
+    }
+
+    const channel = interaction.options.getChannel("channel");
+
+    try {
+        // Check if channel is already disabled
+        const isDisabled = db.prepare(
+            "SELECT channel_id FROM disabled_crate_channels WHERE channel_id = ?"
+        ).get(channel.id);
+
+        if (isDisabled) {
+            // Enable crates by removing from disabled list
+            db.prepare(
+                "DELETE FROM disabled_crate_channels WHERE channel_id = ?"
+            ).run(channel.id);
+
+            await interaction.reply({
+                content: `✅ Crates will now spawn in ${channel}`,
+                flags: 64
+            });
+        } else {
+            // Disable crates by adding to disabled list
+            db.prepare(
+                "INSERT INTO disabled_crate_channels (channel_id, guild_id) VALUES (?, ?)"
+            ).run(channel.id, interaction.guild.id);
+
+            await interaction.reply({
+                content: `❌ Crates will no longer spawn in ${channel}`,
+                flags: 64
+            });
+        }
+    } catch (error) {
+        console.error('Error toggling crate spawns:', error);
+        await interaction.reply({
+            content: '❌ An error occurred while toggling crate spawns.',
+            flags: 64
+        });
+    }
+});
+// Constants
+const CRATE_CONFIG = {
+    SPAWN_CHANCE: 0.001,
+    CLUE_CHANCE: 0.05,
+    THUMBNAIL_URL: "https://static.wikia.nocookie.net/ratchet/images/0/0e/Bolt_crate_from_R%26C_%282002%29_render.png"
+};
+const CRATE_TYPES = Object.freeze([
+    { name: "Small Crate", min: 50, max: 200, color: "#C0C0C0", weight: 0.6 },
+    { name: "Medium Crate", min: 200, max: 500, color: "#FFD700", weight: 0.3 },
+    { name: "Large Crate", min: 500, max: 1000, color: "#FF0000", weight: 0.1 }
+]);
+const CLUES = Object.freeze([
+    "You notice strange writing on the crate: 'The clock reveals...'",
+    "There's a small note inside: 'Speak to the clock to reveal its secrets'",
+    "A faint inscription reads: 'The Great Clock holds treasures for those who know the words'",
+    "You find a torn page with the words: '...clock reveals its...'",
+    "A mysterious message appears briefly: 'Speak the truth and the clock will answer'"
+]);
+class BoltCrateSystem {
+    static selectRandomCrate() {
+        const random = Math.random();
+        let cumulativeWeight = 0;
+
+        for (const crate of CRATE_TYPES) {
+            cumulativeWeight += crate.weight;
+            if (random <= cumulativeWeight) return crate;
+        }
+
+        return CRATE_TYPES[0]; // Fallback to small crate
+    }
+
+    static calculateReward(crate) {
+        return Math.floor(Math.random() * (crate.max - crate.min + 1)) + crate.min;
+    }
+
+    static getRandomClue() {
+        return Math.random() < CRATE_CONFIG.CLUE_CHANCE
+            ? `\n\n🔍 **${CLUES[Math.floor(Math.random() * CLUES.length)]}**`
+            : '';
+    }
+
+    static createSpawnEmbed(crate) {
+        return new EmbedBuilder()
+            .setTitle("A Bolt Crate Appeared!")
+            .setDescription(`Click the button below to claim the **${crate.name}** and receive bolts!`)
+            .addFields({
+                name: "🔧 Possible Reward:",
+                value: ` **${crate.min.toLocaleString()} - ${crate.max.toLocaleString()}** Bolts`
+            })
+            .setColor(crate.color)
+            .setThumbnail(CRATE_CONFIG.THUMBNAIL_URL);
+    }
+
+    static createClaimEmbed(data) {
+        const { displayName, finalAmount, boltMultiplier, clueText } = data;
+
+        return new EmbedBuilder()
+            .setTitle("✅ Bolt Crate Claimed!")
+            .setDescription([
+                `**${displayName}** has claimed the crate and received **${finalAmount.toLocaleString()} bolts**!`,
+                boltMultiplier > 1 ? `*(Includes ${((boltMultiplier - 1) * 100).toFixed(0)}% bonus from equipped items)*` : '',
+                clueText
+            ].filter(Boolean).join("\n"))
+            .setColor("#00FF00")
+            .setThumbnail(CRATE_CONFIG.THUMBNAIL_URL);
+    }
+}
+// Message handler for crate spawning
+client.on("messageCreate", async (message) => {
+    if (message.author.bot || !message.guild) return;
+
+    try {
+        // Check disabled channels
+        const isDisabled = await db.prepare(
+            "SELECT 1 FROM disabled_crate_channels WHERE channel_id = ?"
+        ).get(message.channel.id);
+
+        if (isDisabled) return;
+
+        if (Math.random() >= CRATE_CONFIG.SPAWN_CHANCE) return;
+
+        const selectedCrate = BoltCrateSystem.selectRandomCrate();
+        const bolts = BoltCrateSystem.calculateReward(selectedCrate);
+
+        const button = new ButtonBuilder()
+            .setCustomId(`claim_bolt_crate_${bolts}`)
+            .setLabel("🔧 Claim Crate")
+            .setStyle(ButtonStyle.Success);
+
+        const actionRow = new ActionRowBuilder().addComponents(button);
+        const embed = BoltCrateSystem.createSpawnEmbed(selectedCrate);
+
+        await message.channel.send({
+            embeds: [embed],
+            components: [actionRow]
+        });
+
+    } catch (error) {
+        console.error('Error spawning bolt crate:', error);
+    }
+});
+// Button interaction handler for claiming crates
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton() || !interaction.customId.startsWith("claim_bolt_crate_")) return;
+
+    try {
+        const baseAmount = parseInt(interaction.customId.split("_")[3]);
+        const userId = interaction.user.id;
+        const boltMultiplier = calculateBoltBonus(userId);
+        const finalAmount = Math.floor(baseAmount * boltMultiplier);
+        const displayName = interaction.member.nickname || interaction.user.username;
+
+        // Database transaction
+        const db = shopDB.transaction(() => {
+            shopDB.prepare("UPDATE user_currency SET balance = balance + ? WHERE user_id = ?")
+                .run(finalAmount, userId);
+        });
+
+        db();
+
+        const clueText = BoltCrateSystem.getRandomClue();
+
+        const embed = BoltCrateSystem.createClaimEmbed({
+            displayName,
+            finalAmount,
+            boltMultiplier,
+            clueText
+        });
+
+        await interaction.update({
+            embeds: [embed],
+            components: []
+        });
+
+    } catch (error) {
+        console.error('Error claiming bolt crate:', error);
+        await interaction.reply({
+            content: "❌ An error occurred while claiming the crate. Please try again.",
+            ephemeral: true
+        });
+    }
+});
+// Constants
+const MYSTERY_CRATE_CONFIG = {
+    SPAWN_CHANCE: 0.002,
+    BOLT_REWARD_CHANCE: 0.5,
+    DEFAULT_IMAGE: "https://static.wikia.nocookie.net/ratchet/images/5/53/Ammo_crate_from_UYA_render.png"
+};
+const MYSTERY_CRATES = Object.freeze({
+    common: {
+        name: "Common Mystery Crate",
+        color: "#AAAAAA",
+        image: MYSTERY_CRATE_CONFIG.DEFAULT_IMAGE,
+        boltReward: [50, 150],
+        priceRange: [0, 500],
+        weight: 0.6
+    },
+    rare: {
+        name: "Rare Mystery Crate",
+        color: "#1E90FF",
+        image: MYSTERY_CRATE_CONFIG.DEFAULT_IMAGE,
+        boltReward: [200, 500],
+        priceRange: [500, 1500],
+        weight: 0.3
+    },
+    legendary: {
+        name: "Legendary Mystery Crate",
+        color: "#FFD700",
+        image: MYSTERY_CRATE_CONFIG.DEFAULT_IMAGE,
+        boltReward: [1000, 2500],
+        priceRange: [1500, Infinity],
+        weight: 0.1
+    }
+});
+class MysteryCrateSystem {
+    static selectCrateRarity() {
+        const random = Math.random();
+        let cumulativeWeight = 0;
+
+        for (const [rarity, crate] of Object.entries(MYSTERY_CRATES)) {
+            cumulativeWeight += crate.weight;
+            if (random <= cumulativeWeight) return rarity;
+        }
+
+        return 'common'; // Fallback
+    }
+
+    static calculateBoltReward(crate) {
+        const [min, max] = crate.boltReward;
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    static async getRandomItem(db, crate) {
+        const items = await db.prepare(
+            "SELECT item_id, name FROM shop_items WHERE price BETWEEN ? AND ?"
+        ).all(crate.priceRange[0], crate.priceRange[1]);
+
+        return items.length > 0
+            ? items[Math.floor(Math.random() * items.length)]
+            : null;
+    }
+
+    static createSpawnEmbed(crate) {
+        return new EmbedBuilder()
+            .setTitle(`🌀 A ${crate.name} Appeared!`)
+            .setDescription('Click the button below to **open the crate** and claim your reward!')
+            .setColor(crate.color)
+            .setThumbnail(crate.image);
+    }
+
+    static createRewardEmbed(data) {
+        const { displayName, crate, reward } = data;
+        return new EmbedBuilder()
+            .setTitle(`🎉 ${displayName} Opened a ${crate.name}!`)
+            .setDescription(`They received **${reward}**!`)
+            .setColor(crate.color)
+            .setThumbnail(crate.image);
+    }
+
+    static async processReward(db, userId, crate) {
+        if (Math.random() < MYSTERY_CRATE_CONFIG.BOLT_REWARD_CHANCE) {
+            const bolts = this.calculateBoltReward(crate);
+            await db.prepare(
+                "UPDATE user_currency SET balance = balance + ? WHERE user_id = ?"
+            ).run(bolts, userId);
+            return `${bolts.toLocaleString()} bolts`;
+        }
+
+        const item = await this.getRandomItem(db, crate);
+        if (!item) {
+            const defaultBolts = crate.boltReward[0];
+            await db.prepare(
+                "UPDATE user_currency SET balance = balance + ? WHERE user_id = ?"
+            ).run(defaultBolts, userId);
+            return `${defaultBolts.toLocaleString()} bolts (No items available in this price range)`;
+        }
+
+        const existingItem = await db.prepare(
+            "SELECT 1 FROM user_inventory WHERE user_id = ? AND item_id = ?"
+        ).get(userId, item.item_id);
+
+        if (existingItem) {
+            const compensationBolts = crate.boltReward[0];
+            await db.prepare(
+                "UPDATE user_currency SET balance = balance + ? WHERE user_id = ?"
+            ).run(compensationBolts, userId);
+            return `🔄 Duplicate item detected! You already own **${item.name}**.\nYou received **${compensationBolts.toLocaleString()} bolts** instead!`;
+        }
+
+        await db.prepare(
+            "INSERT INTO user_inventory (user_id, item_id) VALUES (?, ?)"
+        ).run(userId, item.item_id);
+        return item.name;
+    }
+}
+// Message handler for crate spawning
+client.on("messageCreate", async (message) => {
+    if (message.author.bot || !message.guild) return;
+
+    try {
+        const isDisabled = await db.prepare(
+            "SELECT 1 FROM disabled_crate_channels WHERE channel_id = ?"
+        ).get(message.channel.id);
+
+        if (isDisabled) return;
+
+        if (Math.random() >= MYSTERY_CRATE_CONFIG.SPAWN_CHANCE) return;
+
+        const rarity = MysteryCrateSystem.selectCrateRarity();
+        const crate = MYSTERY_CRATES[rarity];
+
+        const button = new ButtonBuilder()
+            .setCustomId(`open_mystery_crate_${rarity}`)
+            .setLabel("Open Crate")
+            .setStyle(ButtonStyle.Primary);
+
+        const actionRow = new ActionRowBuilder().addComponents(button);
+        const embed = MysteryCrateSystem.createSpawnEmbed(crate);
+
+        await message.channel.send({
+            embeds: [embed],
+            components: [actionRow]
+        });
+
+    } catch (error) {
+        console.error('Error spawning mystery crate:', error);
+    }
+});
+// Button interaction handler
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isButton() || !interaction.customId.startsWith("open_mystery_crate_")) return;
+
+    try {
+        const rarity = interaction.customId.split("_")[3];
+        const userId = interaction.user.id;
+        const crate = MYSTERY_CRATES[rarity];
+        const displayName = interaction.member.nickname || interaction.user.username;
+
+        await interaction.deferUpdate();
+
+        const reward = await MysteryCrateSystem.processReward(shopDB, userId, crate);
+
+        const embed = MysteryCrateSystem.createRewardEmbed({
+            displayName,
+            crate,
+            reward
+        });
+
+        await interaction.editReply({
+            embeds: [embed],
+            components: []
+        });
+
+    } catch (error) {
+        console.error('Error processing mystery crate:', error);
+        await interaction.followUp({
+            content: "❌ An error occurred while opening the crate. Please try again.",
+            ephemeral: true
+        });
+    }
+});
+// ====================================
+//             Bot Ready
+// ====================================
 client.once('ready', async () => {
+    // Set bot activity
     client.user.setActivity({
         type: ActivityType.Custom,
         name: 'The Great Clock',
         state: 'Use /tgc-profile to see your level',
     });
 
-    console.log('Bot is ready!');
-    console.log(`Available Guilds: ${client.guilds.cache.size}`);
+    // Initial startup logs
+    console.log(`🤖 ${client.user.tag} is now online!`);
+    console.log(`📊 Connected to ${client.guilds.cache.size} guilds:`);
 
+    // Log guild information
     client.guilds.cache.forEach((guild) => {
-        console.log(`Guild: ${guild.name} (ID: ${guild.id})`);
+        console.log(`   • ${guild.name} (ID: ${guild.id})`);
     });
 
-    console.log(`${client.user.tag} is ready!`);
+    // Run initial ban synchronization
+    await synchronizeBans();
+    console.log('✅ Initial ban synchronization complete');
+
+    // Set up interval for ban synchronization
+    setInterval(async () => {
+        await synchronizeBans();
+    }, 5 * 60 * 1000); // Run every 5 minutes
+
+    console.log('🚀 Bot is fully initialized and ready!');
+});
+
+// Add cleanup for graceful shutdown
+process.on('SIGINT', () => {
+    console.log('👋 Received SIGINT. Cleaning up...');
+    process.exit(0);
+});
+process.on('SIGTERM', () => {
+    console.log('👋 Received SIGTERM. Cleaning up...');
+    process.exit(0);
 });
 
 // Start Bot

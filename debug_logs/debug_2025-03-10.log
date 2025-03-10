@@ -1,0 +1,363 @@
+[2025-03-10T03:41:40.270Z] INFO: 🔄 Registering commands...
+[2025-03-10T03:41:40.773Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T03:41:40.774Z] INFO: • Leveling_Commands
+[2025-03-10T03:41:40.774Z] INFO: • Moderator_Commands
+[2025-03-10T03:41:40.774Z] INFO: • Forwarding_Commands
+[2025-03-10T03:41:40.774Z] INFO: • Message_Management_Commands
+[2025-03-10T03:41:40.774Z] INFO: • Economy_Commands
+[2025-03-10T03:41:40.774Z] INFO: • Fun_Commands
+[2025-03-10T03:41:40.774Z] INFO: • Gambling_Commands
+[2025-03-10T03:41:41.456Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T03:41:41.457Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T03:41:41.457Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T03:41:41.457Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T03:41:41.457Z] INFO: Synchronizing bans...
+[2025-03-10T03:41:42.237Z] INFO: Ban synchronization complete.
+[2025-03-10T03:41:42.237Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T03:41:42.238Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T03:42:05.454Z] INFO: 404ringmaster: +7XP, Total: 1176.93, Level: 4
+[2025-03-10T03:42:05.455Z] INFO: 📩 Message detected in 1348204744291782739: balls
+[2025-03-10T03:42:05.455Z] INFO: ⚠️ No forwarding found for channel 1348204744291782739
+[2025-03-10T03:42:05.458Z] INFO: 💰 404ringmaster earned 7 currency (1.4x multiplier)
+[2025-03-10T05:40:32.478Z] INFO: 🔄 Registering commands...
+[2025-03-10T05:40:33.104Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T05:40:33.104Z] INFO: • Leveling_Commands
+[2025-03-10T05:40:33.104Z] INFO: • Moderator_Commands
+[2025-03-10T05:40:33.104Z] INFO: • Forwarding_Commands
+[2025-03-10T05:40:33.104Z] INFO: • Message_Management_Commands
+[2025-03-10T05:40:33.105Z] INFO: • Economy_Commands
+[2025-03-10T05:40:33.105Z] INFO: • Fun_Commands
+[2025-03-10T05:40:33.105Z] INFO: • Gambling_Commands
+[2025-03-10T05:40:33.729Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T05:40:33.729Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T05:40:33.730Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T05:40:33.730Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T05:40:33.730Z] INFO: Synchronizing bans...
+[2025-03-10T05:40:34.628Z] INFO: Ban synchronization complete.
+[2025-03-10T05:40:34.628Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T05:40:34.628Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T05:41:12.587Z] ERROR: (node:13388) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2025-03-10T05:41:12.899Z] ERROR: Battle error: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:727:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BurstHandler.runRequest (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:831:23)
+    at async _REST.request (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:1272:22)
+    at async ButtonInteraction.update (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:355:22)
+    at async InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5640:17) {
+  requestBody: { files: [], json: { type: 7, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1348531117032083456/aW50ZXJhY3Rpb246MTM0ODUzMTExNzAzMjA4MzQ1NjpjalA0YVZDTXRKcnltVmFUbjI3SzdHQklXRHhadGpHVWV4Nm1DcVUzbW5hSnE4OEdIazVPTlFDU0NpTDNIcW9yOUdhTlFwUEdJWTdMaXNCSU9SMjlJd1ZxSG1Ua2VHeXV0bFBnNXRpMU91YWRrVnYyMWpYUmR2Tmt1SzZlaTVjdw/callback?with_response=false'
+}
+[2025-03-10T05:44:14.366Z] INFO: 🔄 Registering commands...
+[2025-03-10T05:44:14.951Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T05:44:14.951Z] INFO: • Leveling_Commands
+[2025-03-10T05:44:14.951Z] INFO: • Moderator_Commands
+[2025-03-10T05:44:14.952Z] INFO: • Forwarding_Commands
+[2025-03-10T05:44:14.952Z] INFO: • Message_Management_Commands
+[2025-03-10T05:44:14.952Z] INFO: • Economy_Commands
+[2025-03-10T05:44:14.952Z] INFO: • Fun_Commands
+[2025-03-10T05:44:14.952Z] INFO: • Gambling_Commands
+[2025-03-10T05:44:15.483Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T05:44:15.483Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T05:44:15.484Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T05:44:15.484Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T05:44:15.484Z] INFO: Synchronizing bans...
+[2025-03-10T05:44:16.401Z] INFO: Ban synchronization complete.
+[2025-03-10T05:44:16.402Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T05:44:16.402Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T05:44:22.155Z] ERROR: (node:14860) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2025-03-10T05:44:22.482Z] ERROR: Battle error: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:727:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BurstHandler.runRequest (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:831:23)
+    at async _REST.request (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:1272:22)
+    at async ButtonInteraction.update (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:355:22)
+    at async InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5673:17) {
+  requestBody: { files: [], json: { type: 7, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1348531912230043678/aW50ZXJhY3Rpb246MTM0ODUzMTkxMjIzMDA0MzY3ODowVFl5NHlKZHRPUWZ3cldtM2RRTUFSR003dFNBaWtHelJPUWRrenBkQUNGYUlvZk5oeE16MHhVUHpTd2Q1ZkpvQWZtdXZzbk1xbDFtTFl1N0VJVEtLRm9ReVBuTlBzRVJ3M3dSNGo1R3VZb21wTTJONTR1V2RqbXcycDY1MmZBMg/callback?with_response=false'
+}
+[2025-03-10T05:44:43.396Z] ERROR: Battle error: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:727:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BurstHandler.runRequest (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:831:23)
+    at async _REST.request (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:1272:22)
+    at async ButtonInteraction.update (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:355:22)
+    at async InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5673:17) {
+  requestBody: { files: [], json: { type: 7, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1348531999920361533/aW50ZXJhY3Rpb246MTM0ODUzMTk5OTkyMDM2MTUzMzpJVHpURlQ4ekQzUVpIbU9xY1N3akpQNDU0emJqWlhmRThtSnhKT3NmMXRWckJBZGFEUmx6ZWcyQ3prTzRRNEl4N3lyOGd3THY2SGNOenZuWG16T0tEdUZ0YXBsOHpnWW4xMTBWU1FaV3NObXRCWXZHeU5VZnBnREE5NkI2NE5Jbw/callback?with_response=false'
+}
+[2025-03-10T05:48:01.002Z] INFO: 🔄 Registering commands...
+[2025-03-10T05:48:01.585Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T05:48:01.585Z] INFO: • Leveling_Commands
+[2025-03-10T05:48:01.585Z] INFO: • Moderator_Commands
+[2025-03-10T05:48:01.585Z] INFO: • Forwarding_Commands
+[2025-03-10T05:48:01.585Z] INFO: • Message_Management_Commands
+[2025-03-10T05:48:01.585Z] INFO: • Economy_Commands
+[2025-03-10T05:48:01.585Z] INFO: • Fun_Commands
+[2025-03-10T05:48:01.586Z] INFO: • Gambling_Commands
+[2025-03-10T05:48:02.152Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T05:48:02.152Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T05:48:02.152Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T05:48:02.153Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T05:48:02.153Z] INFO: Synchronizing bans...
+[2025-03-10T05:48:03.058Z] INFO: Ban synchronization complete.
+[2025-03-10T05:48:03.058Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T05:48:03.058Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T05:48:06.049Z] ERROR: (node:4488) Warning: Supplying "fetchReply" for interaction response options is deprecated. Utilize "withResponse" instead or fetch the response after using the method.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2025-03-10T05:48:09.986Z] ERROR: (node:4488) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+[2025-03-10T05:48:10.264Z] ERROR: Battle error: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:727:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BurstHandler.runRequest (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:831:23)
+    at async _REST.request (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:1272:22)
+    at async ButtonInteraction.deferUpdate (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:306:22)
+    at async InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5679:21) {
+  requestBody: { files: undefined, json: { type: 6 } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1348532867856334878/aW50ZXJhY3Rpb246MTM0ODUzMjg2Nzg1NjMzNDg3ODpPSmNpM3NjSWNVZGNROFUxVU9KRmJpZGRFWUdpTzllWFVFc0xoYVlzYWhkQXpCMXRSdTVZenJaR2ZWN0JOV1V3SXJSa2N2TlBnd1l1Vng2c2lSRldEdVFUUEQzNDdvdTlrcTU5RjRDRjlPOHhsVUY5bGt1MlBMZnJoYUxZVjBPRQ/callback?with_response=false'
+}
+[2025-03-10T05:48:10.265Z] ERROR: Error [InteractionNotReplied]: The reply to this interaction has not been sent or deferred.
+    at ButtonInteraction.editReply (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:247:48)
+    at InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5691:29)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5) {
+  code: 'InteractionNotReplied'
+} Promise {
+  <rejected> Error [InteractionNotReplied]: The reply to this interaction has not been sent or deferred.
+      at ButtonInteraction.editReply (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:247:48)
+      at InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5691:29)
+      at process.processTicksAndRejections (node:internal/process/task_queues:105:5) {
+    code: 'InteractionNotReplied'
+  },
+  [Symbol(async_id_symbol)]: 1014,
+  [Symbol(trigger_async_id_symbol)]: 1006
+}
+[2025-03-10T05:53:03.060Z] INFO: Synchronizing bans...
+[2025-03-10T05:53:03.900Z] INFO: Ban synchronization complete.
+[2025-03-10T05:58:03.062Z] INFO: Synchronizing bans...
+[2025-03-10T05:58:03.948Z] INFO: Ban synchronization complete.
+[2025-03-10T05:58:12.325Z] INFO: 🔄 Registering commands...
+[2025-03-10T05:58:12.856Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T05:58:12.857Z] INFO: • Leveling_Commands
+[2025-03-10T05:58:12.857Z] INFO: • Moderator_Commands
+[2025-03-10T05:58:12.857Z] INFO: • Forwarding_Commands
+[2025-03-10T05:58:12.857Z] INFO: • Message_Management_Commands
+[2025-03-10T05:58:12.857Z] INFO: • Economy_Commands
+[2025-03-10T05:58:12.857Z] INFO: • Fun_Commands
+[2025-03-10T05:58:12.857Z] INFO: • Gambling_Commands
+[2025-03-10T05:58:13.473Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T05:58:13.473Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T05:58:13.473Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T05:58:13.473Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T05:58:13.474Z] INFO: Synchronizing bans...
+[2025-03-10T05:58:14.186Z] INFO: Ban synchronization complete.
+[2025-03-10T05:58:14.186Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T05:58:14.187Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T05:58:20.752Z] ERROR: (node:15212) Warning: Supplying "fetchReply" for interaction response options is deprecated. Utilize "withResponse" instead or fetch the response after using the method.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2025-03-10T05:58:23.797Z] ERROR: (node:15212) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+[2025-03-10T05:58:24.072Z] ERROR: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:727:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BurstHandler.runRequest (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:831:23)
+    at async _REST.request (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:1272:22)
+    at async ButtonInteraction.reply (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:194:22) {
+  requestBody: { files: [], json: { type: 4, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1348535442391302174/aW50ZXJhY3Rpb246MTM0ODUzNTQ0MjM5MTMwMjE3NDp0T0phMXprVTJDTHhqSElhb2tubXVDZlZGbDhLZkc1V3pKZENRS2RxVnljZ1VVMzRqOG52UHY4ZDY0bWx4VktFaUc0TlBKMGhCd3ZVbmV3RnpDdHZVSjdqWEN5SmlPZDhPS2llWTRDRVJlU3FGYkN5dldiOWp5cUl1RDNBZXNWMQ/callback?with_response=false'
+}
+[2025-03-10T05:58:24.811Z] ERROR: Error in battle: Error [InteractionAlreadyReplied]: The reply to this interaction has already been sent or deferred.
+    at ButtonInteraction.update (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:336:46)
+    at DeathBattle.start (G:\Coding\The-Great-Clock\index.js:5580:36)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5703:21) {
+  code: 'InteractionAlreadyReplied'
+}
+[2025-03-10T06:00:13.835Z] INFO: 🔄 Registering commands...
+[2025-03-10T06:00:14.422Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T06:00:14.423Z] INFO: • Leveling_Commands
+[2025-03-10T06:00:14.423Z] INFO: • Moderator_Commands
+[2025-03-10T06:00:14.423Z] INFO: • Forwarding_Commands
+[2025-03-10T06:00:14.423Z] INFO: • Message_Management_Commands
+[2025-03-10T06:00:14.423Z] INFO: • Economy_Commands
+[2025-03-10T06:00:14.423Z] INFO: • Fun_Commands
+[2025-03-10T06:00:14.423Z] INFO: • Gambling_Commands
+[2025-03-10T06:00:15.034Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T06:00:15.034Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T06:00:15.034Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T06:00:15.035Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T06:00:15.035Z] INFO: Synchronizing bans...
+[2025-03-10T06:00:15.869Z] INFO: Ban synchronization complete.
+[2025-03-10T06:00:15.869Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T06:00:15.869Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T06:00:31.235Z] ERROR: (node:19596) Warning: Supplying "fetchReply" for interaction response options is deprecated. Utilize "withResponse" instead or fetch the response after using the method.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2025-03-10T06:00:34.775Z] ERROR: (node:19596) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+[2025-03-10T06:00:35.057Z] ERROR: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:727:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BurstHandler.runRequest (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:831:23)
+    at async _REST.request (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:1272:22)
+    at async ButtonInteraction.reply (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:194:22) {
+  requestBody: { files: [], json: { type: 4, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1348535991790469202/aW50ZXJhY3Rpb246MTM0ODUzNTk5MTc5MDQ2OTIwMjpOQ1h3a0gyaXp3UjNRd3RVMGF6TklEZEwzR1BKdnkydkxUN0lOSVdCYzJjRFFHV0FrbngzVEtEandZTTE5anMyRHVXUTFyZ21yTWc5andIbjBhdUd3d1dJWHJsZDFDUUlkWWxyYVZuOWg2STVERjZ2ZmxMeGVNQ3R5Ull4N2p0bA/callback?with_response=false'
+}
+[2025-03-10T06:00:35.727Z] ERROR: Error updating interaction: Error [InteractionAlreadyReplied]: The reply to this interaction has already been sent or deferred.
+    at ButtonInteraction.update (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:336:46)
+    at DeathBattle.start (G:\Coding\The-Great-Clock\index.js:5595:32)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5733:21) {
+  code: 'InteractionAlreadyReplied'
+}
+[2025-03-10T06:00:35.728Z] ERROR: Error in battle: Error [InteractionAlreadyReplied]: The reply to this interaction has already been sent or deferred.
+    at ButtonInteraction.update (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:336:46)
+    at DeathBattle.start (G:\Coding\The-Great-Clock\index.js:5595:32)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5733:21) {
+  code: 'InteractionAlreadyReplied'
+}
+[2025-03-10T06:03:00.199Z] INFO: 🔄 Registering commands...
+[2025-03-10T06:03:00.780Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T06:03:00.780Z] INFO: • Leveling_Commands
+[2025-03-10T06:03:00.781Z] INFO: • Moderator_Commands
+[2025-03-10T06:03:00.781Z] INFO: • Forwarding_Commands
+[2025-03-10T06:03:00.781Z] INFO: • Message_Management_Commands
+[2025-03-10T06:03:00.781Z] INFO: • Economy_Commands
+[2025-03-10T06:03:00.781Z] INFO: • Fun_Commands
+[2025-03-10T06:03:00.781Z] INFO: • Gambling_Commands
+[2025-03-10T06:03:01.615Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T06:03:01.615Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T06:03:01.615Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T06:03:01.616Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T06:03:01.616Z] INFO: Synchronizing bans...
+[2025-03-10T06:03:02.450Z] INFO: Ban synchronization complete.
+[2025-03-10T06:03:02.451Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T06:03:02.451Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T06:03:06.120Z] ERROR: (node:5064) Warning: Supplying "fetchReply" for interaction response options is deprecated. Utilize "withResponse" instead or fetch the response after using the method.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2025-03-10T06:03:08.772Z] ERROR: (node:5064) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+[2025-03-10T06:03:09.060Z] ERROR: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:727:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BurstHandler.runRequest (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:831:23)
+    at async _REST.request (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:1272:22)
+    at async ButtonInteraction.reply (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:194:22) {
+  requestBody: { files: [], json: { type: 4, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1348536637692313710/aW50ZXJhY3Rpb246MTM0ODUzNjYzNzY5MjMxMzcxMDo4WXNXVFRyNEZGWHFYMFhwYVVyaVpMVmFGekxKeUEzWklLckRwMUhMNUVNcmxhSzA1TUFrRWtPbHBsOE53cTE3cXg5VzlsekhhREVCNUl0MUI2ODcwcVdIM3hpU1R3bGN3WkhHRk1iV3FiWjMxWXQ1Q3doSzFIUThGdEJZcEVPQQ/callback?with_response=false'
+}
+[2025-03-10T06:05:43.126Z] INFO: 🔄 Registering commands...
+[2025-03-10T06:05:43.636Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T06:05:43.636Z] INFO: • Leveling_Commands
+[2025-03-10T06:05:43.636Z] INFO: • Moderator_Commands
+[2025-03-10T06:05:43.636Z] INFO: • Forwarding_Commands
+[2025-03-10T06:05:43.637Z] INFO: • Message_Management_Commands
+[2025-03-10T06:05:43.637Z] INFO: • Economy_Commands
+[2025-03-10T06:05:43.637Z] INFO: • Fun_Commands
+[2025-03-10T06:05:43.637Z] INFO: • Gambling_Commands
+[2025-03-10T06:05:44.246Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T06:05:44.247Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T06:05:44.247Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T06:05:44.247Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T06:05:44.247Z] INFO: Synchronizing bans...
+[2025-03-10T06:05:44.998Z] INFO: Ban synchronization complete.
+[2025-03-10T06:05:44.998Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T06:05:44.998Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T06:05:52.681Z] ERROR: (node:8332) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2025-03-10T06:05:52.986Z] ERROR: Battle error: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:727:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BurstHandler.runRequest (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:831:23)
+    at async _REST.request (G:\Coding\The-Great-Clock\node_modules\@discordjs\rest\dist\index.js:1272:22)
+    at async ButtonInteraction.update (G:\Coding\The-Great-Clock\node_modules\discord.js\src\structures\interfaces\InteractionResponses.js:355:22)
+    at async InteractionCollector.<anonymous> (G:\Coding\The-Great-Clock\index.js:5641:17) {
+  requestBody: { files: [], json: { type: 7, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1348537325285539920/aW50ZXJhY3Rpb246MTM0ODUzNzMyNTI4NTUzOTkyMDpJSVRjWWVSUnpWZTRyM0ZFeHNDNHdaT1BDWGVIWmZoQVdDV1VkcTY1bW0zbXFBWm1qZ3g0TFpPRWxjSW1SUmFXSndpb2VSZjAzRHhLd3gxbXJtNXB6OGw4V3FpaXlVWjVVVW5JOGoxSkN5NmJ6QlBHTXdQMWp5VFVqVWNHTkl2cw/callback?with_response=false'
+}
+[2025-03-10T06:10:45.003Z] INFO: Synchronizing bans...
+[2025-03-10T06:10:45.899Z] INFO: Ban synchronization complete.
+[2025-03-10T06:11:16.506Z] INFO: 🔄 Registering commands...
+[2025-03-10T06:11:17.362Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T06:11:17.363Z] INFO: • Leveling_Commands
+[2025-03-10T06:11:17.363Z] INFO: • Moderator_Commands
+[2025-03-10T06:11:17.363Z] INFO: • Forwarding_Commands
+[2025-03-10T06:11:17.363Z] INFO: • Message_Management_Commands
+[2025-03-10T06:11:17.363Z] INFO: • Economy_Commands
+[2025-03-10T06:11:17.363Z] INFO: • Fun_Commands
+[2025-03-10T06:11:17.364Z] INFO: • Gambling_Commands
+[2025-03-10T06:11:17.649Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T06:11:17.649Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T06:11:17.649Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T06:11:17.649Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T06:11:17.650Z] INFO: Synchronizing bans...
+[2025-03-10T06:11:18.478Z] INFO: Ban synchronization complete.
+[2025-03-10T06:11:18.478Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T06:11:18.478Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T06:11:46.021Z] ERROR: (node:3516) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2025-03-10T06:11:51.462Z] INFO: 404ringmaster: +20XP, Total: 1196.93, Level: 4
+[2025-03-10T06:11:51.465Z] INFO: 📩 Message detected in 1348204744291782739: Balls
+[2025-03-10T06:11:51.465Z] INFO: ⚠️ No forwarding found for channel 1348204744291782739
+[2025-03-10T06:11:51.467Z] INFO: 💰 404ringmaster earned 1 currency (1.4x multiplier)
+[2025-03-10T06:20:53.614Z] INFO: 🔄 Registering commands...
+[2025-03-10T06:20:54.218Z] INFO: 
+📊 Registered Command Categories:
+[2025-03-10T06:20:54.218Z] INFO: • Leveling_Commands
+[2025-03-10T06:20:54.219Z] INFO: • Moderator_Commands
+[2025-03-10T06:20:54.219Z] INFO: • Forwarding_Commands
+[2025-03-10T06:20:54.219Z] INFO: • Message_Management_Commands
+[2025-03-10T06:20:54.219Z] INFO: • Economy_Commands
+[2025-03-10T06:20:54.219Z] INFO: • Fun_Commands
+[2025-03-10T06:20:54.219Z] INFO: • Gambling_Commands
+[2025-03-10T06:20:54.829Z] INFO: 🤖 The Great Clock (dev branch)#1704 is now online!
+[2025-03-10T06:20:54.829Z] INFO: 📊 Connected to 2 guilds:
+[2025-03-10T06:20:54.829Z] INFO:    • BTS (ID: 1344728865355993118)
+[2025-03-10T06:20:54.829Z] INFO:    • BOTS GALORE (ID: 1348204743805370398)
+[2025-03-10T06:20:54.830Z] INFO: Synchronizing bans...
+[2025-03-10T06:20:55.742Z] INFO: Ban synchronization complete.
+[2025-03-10T06:20:55.743Z] INFO: ✅ Initial ban synchronization complete
+[2025-03-10T06:20:55.743Z] INFO: 🚀 Bot is fully initialized and ready!
+[2025-03-10T06:25:55.754Z] INFO: Synchronizing bans...
+[2025-03-10T06:25:56.567Z] INFO: Ban synchronization complete.
+[2025-03-10T06:30:55.761Z] INFO: Synchronizing bans...
+[2025-03-10T06:30:56.632Z] INFO: Ban synchronization complete.
