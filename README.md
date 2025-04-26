@@ -82,10 +82,7 @@ The **Great Clock Bot** is a Discord bot designed for **XP leveling, role manage
     - Includes **animated battle updates**!  
 
 32. **`/tgc-8ball <question>`** → Ask the magic **8-ball** a yes/no question.  
-33. **`/tgc-randomquote`** → Get a **random Ratchet & Clank-themed quote**.  
-34. **`/tgc-addquote <text>`** → Add a new **quote** to the database. *(Admin only)*  
-35. **`/tgc-listquotes`** → List all stored **quotes** with IDs.  
-36. **`/tgc-deletequote <id>`** → Delete a **quote** from the database. *(Admin only)*  
+33. **`/tgc-fish`** → Casts your rod out to get a fish.
 
 ---
 
@@ -124,7 +121,7 @@ The **Great Clock Bot** is a Discord bot designed for **XP leveling, role manage
 ✅ `/tgc-8ball`  
 ✅ `/tgc-randomquote`  
 
-*All other commands require **permissions set via `/tgc-managecommandroles`**.*  
+*All other commands require **permissions set via `/tgc-managecommandroles`**. (admin only)* 
 
 ---
 
@@ -150,6 +147,7 @@ The **Great Clock Bot** is a Discord bot designed for **XP leveling, role manage
    ```plaintext
    TOKEN=your-bot-token
    CLIENT_ID=your-client-id
+   OWNERID+your-discord-id
    ```
 4. **Run the bot:**  
    ```bash
