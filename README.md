@@ -12,7 +12,7 @@ The **Great Clock Bot** is a Discord bot designed for **XP leveling, role manage
 - **Global ban/kick system** across multiple servers.  
 - **Message forwarding & auto-publishing** for announcements.  
 - **Economy system** (Bolts currency, shop, inventory, gambling).  
-- **Fun features** like **Death Battles, slot machines, roulette, and a random quote system**.  
+- **Fun features** like **Death Battles, slot machines, roulette, and fishing system**.  
 
 ---
 
@@ -119,7 +119,6 @@ The **Great Clock Bot** is a Discord bot designed for **XP leveling, role manage
 ✅ `/tgc-checkjackpot`  
 ✅ `/tgc-deathbattle`  
 ✅ `/tgc-8ball`  
-✅ `/tgc-randomquote`  
 
 *All other commands require **permissions set via `/tgc-managecommandroles`**. (admin only)* 
 
@@ -147,7 +146,8 @@ The **Great Clock Bot** is a Discord bot designed for **XP leveling, role manage
    ```plaintext
    TOKEN=your-bot-token
    CLIENT_ID=your-client-id
-   OWNERID+your-discord-id
+   OWNER_ID=your-discord-id
+   IMGUR_TOKEN=your-imgur-token
    ```
 4. **Run the bot:**  
    ```bash
